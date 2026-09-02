@@ -4,7 +4,7 @@ description: Calibrate the severity of every active Qodo Review Standards rule a
 owner: Qodo
 metadata:
   vendor: qodo
-  version: "0.1.0"
+  version: "0.2.0"
   recommended: "false"
   package: "qodo-standards"
   distribution: "skills-sh"
@@ -22,24 +22,33 @@ is the workspace-wide counterpart to `qodo-manage-standards`: changing one rule'
 the X rule an error") belongs there; re-levelling many rules at once belongs here. Reading and
 applying rules while coding belongs to `qodo-get-rules`.
 
-**This version (0.1.0) implements the preflight only.** It confirms the runtime, authentication,
-admin permission, and tool catalog, reports the outcome, and stops. It issues no write. Export,
-classification, proposal, approval, apply, verify, and revert arrive in a later version.
+**This version (0.2.0) implements preflight, rubric, export, and classification — all
+read-only.** It confirms the runtime, authentication, admin permission, and tool catalog; creates
+the admin's rubric file on first run; exports every active rule into a run folder; assigns one
+taxonomy tag and a proposed severity to each rule; and stops with counts. Proposal rendering,
+approval, apply, verify, and revert arrive in a later version. It issues no write to the
+workspace.
 
 ## Prerequisites
 
 - This skill is installed from its preview repository (skills.sh) and loaded explicitly.
 - The Qodo CLI (0.1.0-next.37 or newer) is installed and authenticated.
+- Node.js 20 or newer on PATH (the CLI itself needs it; the bundled scripts use built-ins only).
 - The user is an admin (`owner` or `admin`) of the workspace whose rules will be calibrated.
 
 ## Instructions
 
 Follow the workflow below in order: preserve update notices, resolve the executable, pass the
 compatibility gate, confirm authentication with provenance stamped on the first call, confirm admin
-permission, confirm the tool catalog, then report the verified outcome. The provenance flags
-(`--skill`, `--skill-version`, `--distribution`) go on the first authenticated call — `qodo read
-whoami` — only; every other command runs without them. Every Qodo command in this version is
-read-only. Stop at the first failed step with the plain message for that step.
+permission, confirm the tool catalog, then run the rubric, export, and classify phases and report
+the verified outcome. The provenance flags (`--skill`, `--skill-version`, `--distribution`) go on
+the first authenticated call — `qodo read whoami` — only; every other command runs without them.
+Every Qodo command in this version is read-only; the only files written live under
+`${QODO_HOME:-$HOME/.qodo}/calibrate/`. Stop at the first failed step with the plain message for
+that step.
+
+`<skill-dir>` below is the directory containing this SKILL.md; its `scripts/` and `references/`
+folders ship with the skill. `<launcher>` is the resolved `qodo` executable from the fallback below.
 
 ## Handle a skill update notice
 
@@ -75,10 +84,19 @@ newer than `next.37`), and a stable `0.1.0` counts as newer than any `0.1.0-next
 
 ```
 qodo --version                                                      # compatibility probe — run this FIRST
-qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.1.0 --distribution skills-sh
+qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.2.0 --distribution skills-sh
 qodo tools --json                                                   # catalog must list rules-update, rules-list, rules-get, rules-metadata
 qodo read tools rules --json                                        # exact safe flags (renders offline)
+ls "${QODO_HOME:-$HOME/.qodo}/calibrate/runs/"                                      # an interrupted run to resume?
+RUN="${QODO_HOME:-$HOME/.qodo}/calibrate/runs/$(date -u +%Y%m%d-%H%M%S)"            # new run id (skip when resuming)
+node <skill-dir>/scripts/rubric.mjs --snapshot "$RUN/rubric-snapshot.yaml"          # new run only; creates rubric.yaml on first run
+node <skill-dir>/scripts/export-rules.mjs --out "$RUN" --qodo <launcher>            # reads guard terms from the snapshot
+node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --status                       # which batches remain
+node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --batch 1 --tags '{"<ruleId>":"<tag>", ...}'
 ```
+
+PowerShell equivalent of the run-id line:
+`$RUN = Join-Path $qodoHome "calibrate/runs/$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"`.
 
 **`qodo: command not found`?** That's usually PATH, not a missing install: GUI-launched agents
 run shells with a minimal PATH. On POSIX, retry `"${QODO_HOME:-$HOME/.qodo}/bin/qodo"`. In
@@ -89,10 +107,11 @@ $qodoHome = if ($env:QODO_HOME) { $env:QODO_HOME } else { Join-Path $HOME '.qodo
 & (Join-Path $qodoHome 'bin/qodo.cmd')
 ```
 
-Keep using the resolved launcher for every Qodo command here. Only if it is missing is Qodo
-actually not installed; tell the user to obtain a checksum-pinned installer command from Qodo or
-their organization's administrator. Installers are served from https://get.qodo.ai, but never
-invent a digest or pipe an installer directly into a shell.
+Keep using the resolved launcher for every Qodo command here, and pass it to the export script as
+`--qodo`. Only if it is missing is Qodo actually not installed; tell the user to obtain a
+checksum-pinned installer command from Qodo or their organization's administrator. Installers are
+served from https://get.qodo.ai, but never invent a digest or pipe an installer directly into a
+shell.
 
 **Sandbox auth diagnostic.** In a sandboxed environment, if `qodo read whoami` fails for any reason
 (including `Not logged in`), ask the user to approve one exact read-only retry of `qodo read whoami`
@@ -129,15 +148,138 @@ and retry before assuming the tool doesn't exist.
    and `organization_permission` from the response for the outcome block; never invent a
    `workspace_id` — if it is absent, the outcome block says "workspace id not reported by whoami".
 3. **Catalog check.** Run `qodo tools --json` and confirm that `rules-update`, `rules-list`,
-   `rules-get`, and `rules-metadata` are listed. This version calls none of them; they are the
-   tools the later calibration steps use, and confirming them now surfaces a stale or incomplete
-   catalog before any write exists. Take each tool's command path from the catalog's `command`
-   field (and `readCommand` for the read tools) rather than trusting any command written in this
-   file. If a tool is missing, or the `rules` commands answer `unknown command`/`unknown option`
-   while `whoami` succeeded, run `qodo read tools rules --json` as the diagnostic (it renders
-   offline from the cached catalog and shows exactly which `rules` tools the cache holds), then run
+   `rules-get`, and `rules-metadata` are listed. This version calls only `rules-list` (through the
+   export script); the others are the tools later calibration steps use, and confirming them now
+   surfaces a stale or incomplete catalog before any write exists. Take each tool's command path
+   from the catalog's `command` field (and `readCommand` for the read tools) rather than trusting
+   any command written in this file; the export script runs `rules-list` as
+   `<launcher> read rules list …`, so confirm that matches the catalog's `readCommand`. If a tool
+   is missing, or the `rules` commands answer `unknown command`/`unknown option` while `whoami`
+   succeeded, run `qodo read tools rules --json` as the diagnostic (it renders offline from the
+   cached catalog and shows exactly which `rules` tools the cache holds), then run
    `qodo tools --refresh` once and retry. If it still fails, report the exact failure and the
    diagnostic output, and stop.
+
+## Rubric
+
+The rubric — the fixed tag taxonomy, each tag's default severity, the platform-category prior, and
+the keyword guard — is documented in `<skill-dir>/references/rubric.md`. Read it before
+classifying. The admin's editable copy lives at `${QODO_HOME:-$HOME/.qodo}/calibrate/rubric.yaml`
+(schema: `version: 1`, `severity_overrides` tag → severity, `guard_terms_extra` list; nothing else).
+
+1. **Interrupted run?** List `${QODO_HOME:-$HOME/.qodo}/calibrate/runs/`. If it has folders, run
+   `node <skill-dir>/scripts/record-batch.mjs --run <newest> --status`: when `batches_remaining`
+   is non-empty (or `export.json` is missing), that run is unfinished — tell the user and resume
+   it: reuse its folder, **skip step 2** (its `rubric-snapshot.yaml` already pins the rubric the
+   recorded batches were classified under), and continue with Export and Classify. Otherwise mint
+   a new run id `$(date -u +%Y%m%d-%H%M%S)` (PowerShell: see Quick start) and the run folder
+   `${QODO_HOME:-$HOME/.qodo}/calibrate/runs/<run-id>/`.
+2. **New run only.** Run `node <skill-dir>/scripts/rubric.mjs --snapshot <run-dir>/rubric-snapshot.yaml`.
+   It honors `QODO_HOME`. On a first run it copies `<skill-dir>/references/rubric-defaults.yaml`
+   to `rubric.yaml` and reports `"created": true` — tell the user the path, that the file is
+   theirs to edit (override a tag's severity under `severity_overrides`, add guard words under
+   `guard_terms_extra`), and that the next run picks up edits. Then continue. If the snapshot
+   already exists the script refuses (exit 2) — that means you are in a resumed run: skip this
+   step. Never pass `--replace-snapshot` on your own; it re-pins a run whose recorded batches were
+   classified under the old rubric.
+3. On every new run the script validates the file and merges it with the defaults. Exit code 2
+   with a quoted line means the rubric is invalid: the message names the file, line, and the valid
+   tags or severities. Show it verbatim and stop — no export, no classification — until the admin
+   fixes the file.
+4. On success the script prints JSON with `severities` (the effective tag → severity map),
+   `guard_terms` (defaults plus `guard_terms_extra`), and `snapshot`. It has written the merged
+   effective rubric verbatim to `<run-dir>/rubric-snapshot.yaml`; export and classify both read
+   that snapshot, so the run is pinned to the rubric as it was when the run started.
+
+## Export
+
+Run the bundled script — one Bash invocation, read-only against the workspace:
+
+```
+node <skill-dir>/scripts/export-rules.mjs --out <run-dir> --qodo <launcher>
+```
+
+The script requires `<run-dir>/rubric-snapshot.yaml` and takes the guard terms from it (there is
+no other guard-term input). It runs `<launcher> read rules list --state active --page-size 100
+--page N --json`; if the catalog's `readCommand` for `rules-list` is anything other than
+`qodo read rules list`, pass its tail as `--read-args "<words after qodo>"` — otherwise omit it.
+Paging stops when the fetched count reaches the response's `totalCount` or a page comes back
+empty; the count must then equal `totalCount`. Rules carry full examples, so a 100-rule page can
+exceed the runtime's per-result byte cap; on the truncation marker the script halves the page size
+(50, 25, …, never below 10) and continues from the rules already fetched. On `MT-RATE-LIMITED` (in
+the JSON or on stderr) it waits 5 seconds and retries the page once. Any other failure, a count
+mismatch, a page that pushes the count past `totalCount`, a duplicate id, a page that takes over
+120 seconds, or a `totalCount` that changes mid-export ends the script with exit code 2, the
+counts and the launcher's stderr tail in the message, and nothing written — report that message
+and stop; do not classify.
+
+On success (exit 0) it prints one JSON line (`totalCount`, `exported`, `pages`, `page_size`,
+`batches`, `guard_hit_rules`) and has written:
+
+- `<run-dir>/export.json` — `run_id`, `exported_at`, `totalCount`, and `rules` exactly as
+  returned by the CLI (raw; never edit it). Written last, atomically, so a half-written export
+  never exists.
+- `<run-dir>/batches/batch-NNN.json` — the rules ordered by `ruleId` in batches of 40, each rule
+  reduced to `ruleId`, `name`, `category`, `severity`, `content`, and `guard_hits` (the guard
+  terms whose case-insensitive stem matched the name or content, precomputed).
+
+A rule's portal URL is its `url` field when present, otherwise `https://app.qodo.ai/rules/<ruleId>`.
+If `totalCount` is 0, the script writes an `export.json` with zero rules and no batch files; render
+the outcome block saying there is nothing to calibrate and stop. If `export.json` already exists in
+`<run-dir>` (a resumed run), the script leaves everything in place and reports `already_exported`;
+if it exists but `batches/` is missing or empty, the script stops and tells you to remove
+`export.json` to re-export — ask the user before deleting anything.
+
+## Classify
+
+Classification is your judgment, batch by batch; the arithmetic is the script's. Work only from
+the batch files — never from `export.json` summaries and never from a rule's name alone.
+
+1. Run `node <skill-dir>/scripts/record-batch.mjs --run <run-dir> --status`. It lists
+   `batches_done` and `batches_remaining` from `<run-dir>/classification.json`. A re-run in the
+   same run folder resumes at the first remaining batch; batches already present are skipped.
+2. For each remaining batch, in order: read `batches/batch-NNN.json` **in full**. For every rule,
+   read the whole `content` together with `name` and `category`, and assign exactly one tag from
+   the taxonomy in `references/rubric.md`. When two tags fit, choose the one with the higher
+   default severity (for example "never log tokens" is `secrets-handling`, not `logging`;
+   "validate request bodies against the schema" is `security-control`, not `api-contract`).
+   Common calls: type annotations and public signatures → `api-contract`; module boundaries,
+   layering, dependency direction, allowed imports between components, "X must never import Y",
+   "create charges only via the façade" → `architecture` (not `api-contract`); docstrings, comments,
+   README/changelog → `documentation`; identifier or file naming → `naming`; formatter or linter
+   output, whitespace, quotes → `style-formatting`; import grouping or unused imports →
+   `import-order`; tests present, structured, deterministic → `test-hygiene`; exceptions, retries,
+   timeouts, null handling → `error-handling`; log presence, levels, structure → `logging`;
+   invariants whose violation gives wrong results → `correctness-contract`; authn/authz, input
+   validation, injection, crypto → `security-control`; migrations, transactions, deletion,
+   idempotency, backups → `data-integrity`; credentials, tokens, keys in code, config, or logs →
+   `secrets-handling`. Long batch? Read it in parts — never skip one or tag from a skim.
+3. Record the batch in one call, with a JSON object that maps every `ruleId` in the batch to its
+   tag:
+   `node <skill-dir>/scripts/record-batch.mjs --run <run-dir> --batch N --tags '{"815399":"documentation", …}'`
+   (or `--tags-file <path>` for the same JSON). The script refuses the batch (exit 2) if any rule
+   is missing, any id is not in the batch, or any tag is not in the taxonomy — fix the mapping and
+   call it again; nothing was recorded. To correct a batch that is already recorded, add
+   `--replace`; it drops only that batch's rows before recording the new ones.
+4. The script derives the rest from `rubric-snapshot.yaml` and the batch file and appends one row
+   per rule to `<run-dir>/classification.json` (a JSON array): `rule_id`, `name`, `category`,
+   `current`, `tag`, `proposed`, `direction` (`decrease`|`increase`|`none`), `guard_hits`,
+   `needs_decision`, `batch`. The derivation you are relying on:
+   - `proposed` = the effective rubric's severity for the tag (default or admin override).
+   - **Veto on decreases.** If `proposed` would be lower than `current` and either the rule has a
+     guard hit or its tag's *default* severity is `recommendation` while its category is
+     `Security` or `Compliance`, the row gets `needs_decision: true`, `proposed` set equal to
+     `current`, and `direction: none`. Increases are never vetoed; a guard hit on a rule the
+     rubric would raise or leave alone is recorded in `guard_hits` but does not set
+     `needs_decision`. A rule whose current severity is not `error`/`warning`/`recommendation`
+     is recorded as `needs_decision` with `proposed` equal to `current`.
+   The file is rewritten atomically after each batch, so an interruption loses at most the batch
+   in progress. The output line carries the batch's counts and the running totals.
+5. After the last batch, run `--status` once more and fill the outcome block from its disjoint
+   counts — `decrease`, `increase`, `unchanged`, `needs_decision` (they sum to `rows`) — plus
+   `current_counts` (`error`/`warning`/`recommendation` across `export.json`) and `total_rules`.
+   Do not write a one-line summary per rule, render a proposal or checklist, touch a decisions
+   ledger, or call `rules update` — those belong to later versions.
 
 ## Report the verified outcome
 
@@ -157,21 +299,23 @@ response into a stronger claim. Render the block once per user-requested operati
 the confirmation gate and not for auth, permission, validation, or transport failures. Put rule
 names, ids, before/after fields, dry-run details, and skipped items below it.
 
-For this version, a passing preflight is the one user-requested operation. Fill the block from
-the actual probe results, for example:
+For this version, a completed classification is the one user-requested operation. Fill the block
+from the export script's output and the final `--status`, for example:
 
 ```
 # 🛡️ Qodo Review Standards
 
-**Outcome:** Preflight passed — Qodo CLI <version>; catalog verified (rules-update, rules-list, rules-get, rules-metadata). Calibration steps (export, propose, apply, verify, revert) arrive in a later version of this skill.
-**Scope:** workspace <workspace_id>
-**State:** permission <organization_permission>; no rules read or changed
+**Outcome:** Exported <total_rules> active rules (<batches_total> batches) and classified all <rows> against the rubric: <decrease> proposed decreases · <increase> proposed increases · <unchanged> unchanged · <needs_decision> need a decision (guard or category conflict). Read-only — no rule changed. Proposal, approval, apply, verify, and revert arrive in a later version of this skill.
+**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.json); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied)
+**State:** permission <organization_permission>; current severities: <current_counts.error> error · <current_counts.warning> warning · <current_counts.recommendation> recommendation
 ---
 ```
 
-Do not render the block when the CLI is missing or too old, when the user is not logged in, when
-the admin gate fails, or when the catalog check fails after one refresh — those stops get the plain
-message for that step instead.
+For an empty workspace, the Outcome line says the export found 0 active rules and there is
+nothing to calibrate. Do not render the block when the CLI is missing or too old, when the user is
+not logged in, when the admin gate fails, when the catalog check fails after one refresh, when the
+rubric is invalid, or when the export script exits non-zero — those stops get the plain message
+for that step instead.
 
 ## Error Handling
 
@@ -188,18 +332,33 @@ message for that step instead.
 - **Stale catalog** — `unknown command`/`unknown option` on `rules`, or a required tool missing
   from `qodo tools --json`, while `whoami` works: `qodo tools --refresh` once, retry; if it still
   fails, report the exact failure and stop.
-- **Rate limited (`MT-RATE-LIMITED`)** — wait about 5 seconds and retry the same command once; if
-  still rate limited, report it and stop.
+- **Invalid rubric** (`rubric.mjs` exit 2 with a quoted line) — quote the script's message (it
+  names the file, line, and valid values) and stop before export. Never "fix" the admin's rubric
+  yourself. Exit 2 saying the snapshot already exists means a resumed run: skip the rubric step.
+- **Node.js too old** — every script checks for Node 20+ and prints a one-line message; ask the
+  user to install a current Node.js (the Qodo CLI needs it too).
+- **Short or failed export** (`export-rules.mjs` exit 2) — report the counts from stderr and stop;
+  no classification. A `totalCount` that changed mid-run means rules were edited during export —
+  re-run the script in the same run folder.
+- **Rate limited (`MT-RATE-LIMITED`)** — the export script already waits 5 seconds and retries the
+  page once; for any other command, do the same by hand. If still rate limited, report it and stop.
+- **Batch refused** (`record-batch.mjs` exit 2) — the message lists every missing rule or invalid
+  tag; complete the mapping and record the batch again.
 
 ## Guardrails
 
 - **No Review Standards writes in this version.** Every Qodo command here (`--version`,
-  `read whoami`, `tools --json`, `tools --refresh`, `read tools rules`) leaves the workspace's
-  rules untouched. Do not call `qodo rules update` or any other mutating tool, and write nothing
-  into the skill install directory or `~/.qodo/` — except the CLI's own catalog cache, which
-  `qodo tools --refresh` refreshes as part of the mandated stale-catalog recovery.
+  `read whoami`, `tools --json`, `tools --refresh`, `read tools rules`, and `read rules list`
+  inside the export script) leaves the workspace's rules untouched. Do not call `qodo rules update`
+  or any other mutating tool. The only files written are `${QODO_HOME:-$HOME/.qodo}/calibrate/rubric.yaml`
+  (first run only) and the run folder `${QODO_HOME:-$HOME/.qodo}/calibrate/runs/<run-id>/`
+  (`export.json`, `batches/`, `rubric-snapshot.yaml`, `classification.json`) — plus the CLI's
+  own catalog cache, which `qodo tools --refresh` refreshes as part of the mandated stale-catalog
+  recovery. Write nothing into the skill install directory or inside a repository.
 - **Never fabricate a rule id, scope, or example.** Resolve or ask; an empty result from `list`
   is a valid outcome, not an error.
+- **Classify from the full content.** Never tag a rule from its name or a summary, never skip a
+  batch because it is long, and never edit `export.json` or a batch file.
 - **Tell the user which outcome actually happened** — active rule vs. pending suggestion,
   matched vs. succeeded count from a bulk call — don't assume success from a 200 response alone.
 - **Documented departure (forward reference).** Later versions apply approved severity changes as
@@ -209,8 +368,8 @@ message for that step instead.
   the calibration apply step, writes exactly one field (`severity`), records a per-row receipt that
   supports revert, and does not exist in this version.
 
-Lead with the bottom line — what passed, what stopped the preflight and why — then the specifics.
-A short, accurate status beats a wall of JSON.
+Lead with the bottom line — what was exported and classified, or what stopped the run and why —
+then the specifics. A short, accurate status beats a wall of JSON.
 
-Calibration steps — export, classify, propose, approve, apply, verify, revert — follow in a later
-version of this skill.
+Calibration steps — propose, approve, apply, verify, revert — follow in a later version of this
+skill.
