@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildGuardMatchers, compareRuleIds, DEFAULT_GUARD_TERMS, guardHits, parseRubric, TAG_DEFAULTS, TAGS } from '../lib/calibrate-lib.mjs';
+import { SKILL_VERSION, splitStatus } from '../lib/receipt-lib.mjs';
 import { SKILL_DIR } from './helpers.mjs';
 
 const hits = (text, terms = DEFAULT_GUARD_TERMS) => guardHits({ name: '', content: text }, buildGuardMatchers(terms));
@@ -42,4 +43,29 @@ test('references/rubric.md and rubric-defaults.yaml agree with the code taxonomy
   for (const term of DEFAULT_GUARD_TERMS) assert.ok(md.includes(`\`${term}\``), `rubric.md guard term ${term}`);
   const parsed = parseRubric(yaml, 'rubric-defaults.yaml');
   assert.deepEqual(parsed, { version: 1, severity_overrides: {}, guard_terms_extra: [] });
+});
+
+test('SKILL_VERSION matches SKILL.md metadata and the Quick start provenance flag', () => {
+  // The version is stamped into every generated apply.sh header, so a drift between the code and
+  // the documented version would put a wrong number in the audit trail.
+  const skill = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+  const metadata = skill.match(/^\s+version:\s*"([^"]+)"\s*$/m);
+  assert.ok(metadata, 'SKILL.md metadata.version');
+  assert.equal(metadata[1], SKILL_VERSION);
+  const provenance = skill.match(/--skill-version\s+(\S+)/);
+  assert.ok(provenance, 'SKILL.md Quick start --skill-version');
+  assert.equal(provenance[1], SKILL_VERSION);
+  assert.ok(readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8').includes(`Version ${SKILL_VERSION}`), 'README version line');
+});
+
+test('receipt-format.md documents the status tokens the code can write', () => {
+  const doc = readFileSync(join(SKILL_DIR, 'references', 'receipt-format.md'), 'utf8');
+  for (const token of ['applied', 'failed(<code>)', 'deferred', 'skipped', 'verified', 'reverted']) {
+    assert.ok(doc.includes(`\`· ${token}\``) || doc.includes(`· ${token}`), `receipt-format.md token ${token}`);
+  }
+  // Every token the grammar strips must be named, so the page and STATUS_RE cannot drift.
+  for (const token of ['applied', 'deferred', 'skipped', 'verified', 'reverted']) {
+    assert.ok(splitStatus(`- [x] 1 · n · s · warning → error · https://x/1 · ${token}`).statuses.length === 1, `STATUS_RE knows ${token}`);
+    assert.ok(doc.includes(token), `receipt-format.md mentions ${token}`);
+  }
 });

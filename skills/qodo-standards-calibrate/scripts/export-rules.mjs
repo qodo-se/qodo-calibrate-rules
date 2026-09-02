@@ -12,20 +12,18 @@
 //
 // Exit codes: 0 exported (or already exported), 1 usage / Node too old, 2 export failed.
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { buildGuardMatchers, compareRuleIds, guardHits, parseSnapshot, requireNode20, validateSnapshot } from './lib/calibrate-lib.mjs';
+import { errorOf, forwardStderr, parseJsonOutput, RATE_LIMIT_CODE, sleep, spawnLauncher, stderrTail, TIMEOUT_MS, TRUNCATED_CODE } from './lib/launcher-lib.mjs';
 
 requireNode20();
 
 const PAGE_SIZE = 100; // rules-list maximum; halved when the runtime truncates a page
 const MIN_PAGE_SIZE = 10;
 const BATCH_SIZE = 40;
-const RATE_LIMIT_CODE = 'MT-RATE-LIMITED';
 const RATE_LIMIT_WAIT_MS = 5000;
-const PAGE_TIMEOUT_MS = 120000;
-const TRUNCATED_CODE = 'result_too_large';
+const PAGE_TIMEOUT_MS = TIMEOUT_MS;
 const DEFAULT_READ_ARGS = 'read rules list';
 
 function fail(code, message) {
@@ -59,58 +57,6 @@ function parseArgs(argv) {
   return args;
 }
 
-function sleep(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function stderrTail(stderr) {
-  const lines = (stderr || '').split('\n').filter((l) => l.trim() && !/^\s*trace\s+[0-9a-f]+\s*$/i.test(l));
-  const text = lines.join(' ').trim();
-  return text.length > 300 ? `…${text.slice(-300)}` : text;
-}
-
-function parseJsonOutput(stdout) {
-  const text = (stdout || '').trim();
-  if (!text) return { error: { code: 'empty_output', message: 'launcher printed nothing on stdout' } };
-  const attempts = [text];
-  for (const line of text.split('\n')) {
-    const t = line.trim();
-    if (t.startsWith('{')) attempts.push(t);
-  }
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (first >= 0 && last > first) attempts.push(text.slice(first, last + 1));
-  for (const candidate of attempts) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { payload: parsed };
-    } catch { /* try the next candidate */ }
-  }
-  return { error: { code: 'invalid_json', message: `stdout is not a JSON object: ${text.slice(0, 200)}` } };
-}
-
-function errorOf(payload) {
-  // The CLI has emitted both {"error":{code,message}} and {code,message}; accept either.
-  if (payload.error && typeof payload.error === 'object' && payload.error.code) return payload.error;
-  if (payload.code && payload.message && !Array.isArray(payload.rules)) return payload;
-  // The runtime replaces a result above its byte cap with this marker (exit 0, no error key).
-  if (payload.qar_operation_result_truncated === true) {
-    return { code: TRUNCATED_CODE, message: `page result ${payload.byte_size} bytes exceeds the runtime cap of ${payload.max_bytes} bytes` };
-  }
-  return null;
-}
-
-function spawnLauncher(launcher, argv) {
-  const opts = { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: PAGE_TIMEOUT_MS };
-  if (/\.(mjs|cjs|js)$/i.test(launcher)) return spawnSync(process.execPath, [launcher, ...argv], opts);
-  if (/\.(cmd|bat)$/i.test(launcher)) {
-    // Node >= 20.12 refuses to spawn .cmd/.bat without a shell.
-    const quote = (s) => (/[\s"]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
-    return spawnSync(quote(launcher), argv.map(quote), { ...opts, shell: true });
-  }
-  return spawnSync(launcher, argv, opts);
-}
-
 function runPage(launcher, readArgs, page, pageSize) {
   const argv = [...readArgs, '--state', 'active', '--page-size', String(pageSize), '--page', String(page), '--json'];
   const res = spawnLauncher(launcher, argv);
@@ -121,9 +67,7 @@ function runPage(launcher, readArgs, page, pageSize) {
     return withTail({ code: 'spawn_failed', message: `${launcher}: ${res.error.message}` });
   }
   // Forward notices (e.g. QODO_NOTICE) but drop the CLI's trace lines.
-  for (const line of (res.stderr || '').split('\n')) {
-    if (line.trim() && !/^\s*trace\s+[0-9a-f]+\s*$/i.test(line)) process.stderr.write(`${line}\n`);
-  }
+  forwardStderr(res.stderr);
   if ((res.stderr || '').includes(RATE_LIMIT_CODE)) return withTail({ code: RATE_LIMIT_CODE, message: 'rate limited (reported on stderr)' });
   const parsed = parseJsonOutput(res.stdout);
   if (parsed.error) return withTail(parsed.error);

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseReceipt } from '../lib/receipt-lib.mjs';
 
 export const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 export const SCRIPTS_DIR = join(TEST_DIR, '..');
@@ -14,6 +15,7 @@ export const RECORD = join(SCRIPTS_DIR, 'record-batch.mjs');
 export const PROPOSAL = join(SCRIPTS_DIR, 'proposal.mjs');
 export const APPROVE = join(SCRIPTS_DIR, 'approve.mjs');
 export const LEDGER = join(SCRIPTS_DIR, 'ledger.mjs');
+export const APPLY = join(SCRIPTS_DIR, 'apply.mjs');
 
 export function tmp(prefix = 'calibrate-test-') {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -99,6 +101,63 @@ export function readText(path) {
 // The proposal's rows, in file order, with their 1-based line numbers.
 export function proposalRows(text) {
   return text.split('\n').map((line, i) => ({ line: i + 1, text: line })).filter((l) => /^- \[/.test(l.text));
+}
+
+// One parsed JSON line per fake `rules update` call (FAKE_UPDATE_LOG), in call order.
+export function updateLog(path) {
+  try { return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; }
+}
+
+export function applyResults(runDir) {
+  try { return readFileSync(join(runDir, 'apply-results.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; }
+}
+
+// The receipt's rows as [ruleId, effectiveStatus] pairs, in file order.
+export function receiptStatuses(runDir) {
+  const rows = parseReceipt(readText(join(runDir, 'receipt.md'))).rows;
+  return rows.map((r) => [r.rule_id, r.status]);
+}
+
+// The state story 4 starts from: a rendered proposal, the admin's edits applied, and a readback
+// that confirms the counts. `edits` is a list of [linePrefix, replacement] pairs where the
+// replacement is a string, a function of the line, or null to delete it — the same editor
+// approve.test.mjs uses. Returns the context plus the readback JSON.
+export function confirmed({ edits = [], rules = CALIB_RULES, tags = CALIB_TAGS, rubricYaml } = {}) {
+  const ctx = makeCalibrated(rubricYaml === undefined ? { rules, tags } : { rules, tags, rubricYaml });
+  const s = run(PROPOSAL, ['--run', ctx.runDir, '--record-summaries', JSON.stringify(summariesFor(rules.map((r) => r.ruleId)))], { env: ctx.env });
+  if (s.status !== 0) throw new Error(`record summaries failed: ${s.stderr}`);
+  const r = run(PROPOSAL, ['--run', ctx.runDir, '--render', '--workspace-id', 'ws-1'], { env: ctx.env });
+  if (r.status !== 0) throw new Error(`render failed: ${r.stderr}`);
+  ctx.proposal = join(ctx.runDir, 'proposal.md');
+  ctx.receipt = join(ctx.runDir, 'receipt.md');
+  ctx.script = join(ctx.runDir, 'apply.sh');
+  if (edits.length) {
+    const text = readText(ctx.proposal).split('\n').flatMap((line) => {
+      for (const [match, replace] of edits) {
+        if (line.startsWith(match)) {
+          if (replace === null) return [];
+          return [typeof replace === 'function' ? replace(line) : replace];
+        }
+      }
+      return [line];
+    }).join('\n');
+    writeFileSync(ctx.proposal, text);
+  }
+  const rb = run(APPROVE, ['--run', ctx.runDir, '--readback'], { env: ctx.env });
+  if (rb.status !== 0) throw new Error(`readback failed: ${rb.stderr}`);
+  ctx.readback = rb.json;
+  return ctx;
+}
+
+// Runs the generated apply.sh in one shell invocation, the way the skill does.
+export function runScript(ctx, env = {}) {
+  const res = spawnSync('sh', [ctx.script], {
+    encoding: 'utf8',
+    env: { ...process.env, ...ctx.env, ...env },
+  });
+  let json = null;
+  try { json = JSON.parse(res.stdout.trim().split('\n').pop()); } catch { /* not JSON */ }
+  return { status: res.status, stdout: res.stdout, stderr: res.stderr, json };
 }
 
 export function ledgerLines(path) {

@@ -69,3 +69,29 @@ guard_terms_extra:        # appended to the default guard list
 Unknown keys are an error. Tag names outside the taxonomy are an error. The full effective rubric
 (defaults merged with overrides) is written to `<run-dir>/rubric-snapshot.yaml` for every run and
 is embedded verbatim in every proposal and receipt.
+
+## Tagging: common calls
+
+One tag per rule, chosen from the rule's **full content** together with its name and platform
+category — never from the name alone and never from the proposal's one-line summary. When two
+tags fit, choose the one with the higher default severity ("never log tokens" is
+`secrets-handling`, not `logging`; "validate request bodies against the schema" is
+`security-control`, not `api-contract`).
+
+| The rule is about | Tag |
+|---|---|
+| type annotations, public signatures, schema/interface stability | `api-contract` |
+| module boundaries, layering, dependency direction, allowed imports between components, "X must never import Y", "create charges only via the façade" | `architecture` (not `api-contract`) |
+| docstrings, comments, README/changelog | `documentation` |
+| identifier or file naming | `naming` |
+| formatter or linter output, whitespace, quotes, line length | `style-formatting` |
+| import grouping, unused imports | `import-order` |
+| tests present, structured, deterministic | `test-hygiene` |
+| exceptions, retries, timeouts, null handling | `error-handling` |
+| log presence, levels, structure | `logging` |
+| invariants whose violation gives wrong results | `correctness-contract` |
+| authn/authz, input validation, injection, crypto | `security-control` |
+| migrations, transactions, deletion, idempotency, backups | `data-integrity` |
+| credentials, tokens, keys in code, config, or logs | `secrets-handling` |
+
+Long batch? Read it in parts — never skip one or tag from a skim.

@@ -112,6 +112,10 @@ invalid rows, and this line:
   `--replace`, which discards their edits.
 - Recording is per (run, rule): confirming again after the admin unchecks another row appends
   only the new row, and confirming an unchanged file appends nothing.
+- **When each entry is written:** `skip` entries when the admin confirms the readback
+  (`approve.mjs --record-skips`); `approve` and `override` entries only for rows that actually
+  applied (`apply.mjs --write-receipt`), so a failed, deferred, or pending row is proposed again.
+  See `receipt-format.md`.
 - `ledger.mjs --show [<id> …]` prints the effective (latest) entry per rule.
 - A blank or corrupt line is skipped with a warning: a half-written line never locks the admin
   out of their own decisions.
