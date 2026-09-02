@@ -4,7 +4,7 @@ description: Calibrate the severity of every active Qodo Review Standards rule a
 owner: Qodo
 metadata:
   vendor: qodo
-  version: "0.2.0"
+  version: "0.3.0"
   recommended: "false"
   package: "qodo-standards"
   distribution: "skills-sh"
@@ -22,12 +22,13 @@ is the workspace-wide counterpart to `qodo-manage-standards`: changing one rule'
 the X rule an error") belongs there; re-levelling many rules at once belongs here. Reading and
 applying rules while coding belongs to `qodo-get-rules`.
 
-**This version (0.2.0) implements preflight, rubric, export, and classification — all
-read-only.** It confirms the runtime, authentication, admin permission, and tool catalog; creates
-the admin's rubric file on first run; exports every active rule into a run folder; assigns one
-taxonomy tag and a proposed severity to each rule; and stops with counts. Proposal rendering,
-approval, apply, verify, and revert arrive in a later version. It issues no write to the
-workspace.
+**This version implements preflight, rubric, export, classification, the proposal, and the
+approval readback.** It confirms the runtime, authentication, admin permission, and tool catalog;
+creates the admin's rubric file on first run; exports every active rule into a run folder;
+assigns one taxonomy tag and a proposed severity to each rule; renders a diff-only checklist the
+admin edits; reads their decisions back; and, after explicit confirmation, records the rules they
+skipped so a later run does not re-propose them. Apply, verify, and revert arrive in a later
+version. It issues no write to the workspace — no rule's severity changes yet.
 
 ## Prerequisites
 
@@ -40,8 +41,8 @@ workspace.
 
 Follow the workflow below in order: preserve update notices, resolve the executable, pass the
 compatibility gate, confirm authentication with provenance stamped on the first call, confirm admin
-permission, confirm the tool catalog, then run the rubric, export, and classify phases and report
-the verified outcome. The provenance flags (`--skill`, `--skill-version`, `--distribution`) go on
+permission, confirm the tool catalog, then run the rubric, export, classify, summarize, propose,
+and approve phases and report the verified outcome. The provenance flags (`--skill`, `--skill-version`, `--distribution`) go on
 the first authenticated call — `qodo read whoami` — only; every other command runs without them.
 Every Qodo command in this version is read-only; the only files written live under
 `${QODO_HOME:-$HOME/.qodo}/calibrate/`. Stop at the first failed step with the plain message for
@@ -84,7 +85,7 @@ newer than `next.37`), and a stable `0.1.0` counts as newer than any `0.1.0-next
 
 ```
 qodo --version                                                      # compatibility probe — run this FIRST
-qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.2.0 --distribution skills-sh
+qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.3.0 --distribution skills-sh
 qodo tools --json                                                   # catalog must list rules-update, rules-list, rules-get, rules-metadata
 qodo read tools rules --json                                        # exact safe flags (renders offline)
 ls "${QODO_HOME:-$HOME/.qodo}/calibrate/runs/"                                      # an interrupted run to resume?
@@ -93,10 +94,20 @@ node <skill-dir>/scripts/rubric.mjs --snapshot "$RUN/rubric-snapshot.yaml"      
 node <skill-dir>/scripts/export-rules.mjs --out "$RUN" --qodo <launcher>            # reads guard terms from the snapshot
 node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --status                       # which batches remain
 node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --batch 1 --tags '{"<ruleId>":"<tag>", ...}'
+node <skill-dir>/scripts/proposal.mjs --run "$RUN" --summaries-needed --limit 20     # rows still missing a summary
+node <skill-dir>/scripts/proposal.mjs --run "$RUN" --record-summaries '{"<ruleId>":"<one line>"}'
+node <skill-dir>/scripts/proposal.mjs --run "$RUN" --summaries-file <path>          # same JSON from a file
+node <skill-dir>/scripts/proposal.mjs --run "$RUN" --render --workspace-id <workspace_id>   # writes proposal.md
+node <skill-dir>/scripts/approve.mjs --run "$RUN" --readback                        # counts + invalid rows; writes nothing
+node <skill-dir>/scripts/approve.mjs --run "$RUN" --record-skips                    # only after the admin says yes
+node <skill-dir>/scripts/ledger.mjs --show                                          # what earlier runs decided
+node <skill-dir>/scripts/ledger.mjs --reconsider <ruleId>                           # release a held rule
 ```
 
 PowerShell equivalent of the run-id line:
 `$RUN = Join-Path $qodoHome "calibrate/runs/$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"`.
+Single-quoted JSON does not survive PowerShell quoting — on Windows, write the summaries chunk
+and the tag map to a file and pass `--summaries-file` / `--tags-file` instead.
 
 **`qodo: command not found`?** That's usually PATH, not a missing install: GUI-launched agents
 run shells with a minimal PATH. On POSIX, retry `"${QODO_HOME:-$HOME/.qodo}/bin/qodo"`. In
@@ -275,11 +286,83 @@ the batch files — never from `export.json` summaries and never from a rule's n
      is recorded as `needs_decision` with `proposed` equal to `current`.
    The file is rewritten atomically after each batch, so an interruption loses at most the batch
    in progress. The output line carries the batch's counts and the running totals.
-5. After the last batch, run `--status` once more and fill the outcome block from its disjoint
-   counts — `decrease`, `increase`, `unchanged`, `needs_decision` (they sum to `rows`) — plus
-   `current_counts` (`error`/`warning`/`recommendation` across `export.json`) and `total_rules`.
-   Do not write a one-line summary per rule, render a proposal or checklist, touch a decisions
-   ledger, or call `rules update` — those belong to later versions.
+5. After the last batch, run `--status` once more. `decrease`, `increase`, `unchanged`, and
+   `needs_decision` are disjoint and sum to `rows`; `batches_remaining` must be empty before the
+   proposal will render. Then continue with Summarize.
+
+## Summarize
+
+Every row that will appear in the proposal needs a one-line summary, written by you from the
+rule's full `content`. The proposal refuses to render while one is missing.
+
+1. `node <skill-dir>/scripts/proposal.mjs --run <run-dir> --summaries-needed --limit 20` lists
+   the rules that still need one, each with `rule_id`, `name`, `tag`, and the full `content`.
+   Only rows that will be rendered are listed: unchanged rules and rules held by a prior
+   decision never are.
+2. Write one sentence per rule from that content — what the rule requires — at most 160
+   characters, on one line, with no ` · `, no `→`, and no `…`. It is display-only: never
+   classify from a summary, and never paste a truncated slice of the content as one.
+3. Record the chunk in one call, as a JSON object of rule id to summary:
+   `node <skill-dir>/scripts/proposal.mjs --run <run-dir> --record-summaries '{"815399":"Every public function carries a docstring"}'`
+   — one entry per rule in the chunk, or the same JSON in a file with `--summaries-file <path>`
+   (the form to use on Windows). An invalid summary refuses the whole chunk, names the offending
+   ids, and records nothing; a blank summary counts as missing. Chunks merge into
+   `<run-dir>/summaries.json`; repeat steps 1–3 until `needed_total` is 0. A row listed under
+   `missing_content` has no rule text in `export.json` — say so rather than inventing a summary.
+
+## Propose
+
+```
+node <skill-dir>/scripts/proposal.mjs --run <run-dir> --render --workspace-id <workspace_id>
+```
+
+This writes `<run-dir>/proposal.md`: the diff-only checklist grouped by direction × tag, every
+rubric-proposed row pre-checked, every needs-a-decision row unchecked, the run's rubric snapshot
+in the frontmatter, and a footer counting the rules held by a prior decision. The grammar,
+section wording, and frontmatter are in `<skill-dir>/references/proposal-format.md` — read it
+before you explain the file, and never hand-write or hand-edit a row. Take `<workspace_id>` from
+the `whoami` response; never invent one.
+
+It refuses with exit 2 and writes nothing when the classification is incomplete (it names the
+remaining batches), a rendered row has no summary (it lists the ids), or `proposal.md` already
+exists. `--replace` overwrites it — ask the admin first, because their edits are discarded.
+
+Then hand the file to the admin: the path, and that a checked row is approved, unchecking a row
+skips it, editing the value after `→` is an override, and the needs-a-decision rows start
+unchecked because a keyword guard or the rule's platform category contradicts the decrease. Ask
+them to say when they are done. Do not edit the file for them.
+
+## Approve
+
+```
+node <skill-dir>/scripts/approve.mjs --run <run-dir> --readback
+```
+
+The readback prints each row's decision plus `counts`, `invalid`, `removed`, and
+`readback_text`. Show `readback_text` verbatim, name every invalid row by line number and reason
+and say it is excluded, mention `removed` rows if there are any, then ask for explicit
+confirmation. Nothing has been written at this point.
+
+Only after the admin says yes: `node <skill-dir>/scripts/approve.mjs --run <run-dir> --record-skips`
+appends their skipped rows to the decisions ledger, once per run (a second call reports
+`already_recorded`). **The workflow stops there in this version.** Approvals and overrides are
+not applied and not recorded; `qodo rules update`, `apply.sh`, and `receipt.md` belong to a later
+version. Say so plainly rather than implying anything changed.
+
+## Decisions ledger
+
+`${QODO_HOME:-$HOME/.qodo}/calibrate/decisions.jsonl` remembers what the admin already decided,
+so a second run does not ask twice. A rule is held out of the proposal while a skip or override
+still matches its content hash, or an approve still matches its current severity; the footer
+counts the held rules. `node <skill-dir>/scripts/ledger.mjs --show` prints the effective entry
+per rule. When the admin says "reconsider rule 815412", run
+`node <skill-dir>/scripts/ledger.mjs --reconsider 815412` and re-render with `--replace`; an id
+with no entry is reported as nothing to release and nothing is written. Ledger semantics are in
+`references/proposal-format.md`.
+
+Release a rule **before** the admin starts editing the checklist, or on the next run. Re-rendering
+mid-edit with `--replace` discards everything they have changed so far, so ask first and tell them
+that is the cost; otherwise note the request and run it at the start of the next run.
 
 ## Report the verified outcome
 
@@ -299,23 +382,25 @@ response into a stronger claim. Render the block once per user-requested operati
 the confirmation gate and not for auth, permission, validation, or transport failures. Put rule
 names, ids, before/after fields, dry-run details, and skipped items below it.
 
-For this version, a completed classification is the one user-requested operation. Fill the block
-from the export script's output and the final `--status`, for example:
+For this version the user-requested operation ends at the recorded decisions. Fill the block from
+the render output and the readback, for example:
 
 ```
 # 🛡️ Qodo Review Standards
 
-**Outcome:** Exported <total_rules> active rules (<batches_total> batches) and classified all <rows> against the rubric: <decrease> proposed decreases · <increase> proposed increases · <unchanged> unchanged · <needs_decision> need a decision (guard or category conflict). Read-only — no rule changed. Proposal, approval, apply, verify, and revert arrive in a later version of this skill.
-**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.json); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied)
+**Outcome:** Exported <total_rules> active rules and classified all <rows> against the rubric, then proposed <rows-in-proposal> severity changes (<proposed> pre-checked · <needs_decision> needing a decision · <held_by_prior_decision> held by earlier decisions). Readback: <readback_text>. Recorded <recorded> skip decisions. Nothing was applied — no rule's severity changed; apply, verify, and revert arrive in a later version of this skill.
+**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.json, summaries.json, proposal.md); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied); ledger ~/.qodo/calibrate/decisions.jsonl
 **State:** permission <organization_permission>; current severities: <current_counts.error> error · <current_counts.warning> warning · <current_counts.recommendation> recommendation
 ---
 ```
 
-For an empty workspace, the Outcome line says the export found 0 active rules and there is
-nothing to calibrate. Do not render the block when the CLI is missing or too old, when the user is
-not logged in, when the admin gate fails, when the catalog check fails after one refresh, when the
-rubric is invalid, or when the export script exits non-zero — those stops get the plain message
-for that step instead.
+If the run stops at classification (the admin has not finished editing yet), report the
+classification counts and the proposal path and say the decision is still open. For an empty
+workspace, the Outcome line says the export found 0 active rules and there is nothing to
+calibrate. Do not render the block when the CLI is missing or too old, when the user is not
+logged in, when the admin gate fails, when the catalog check fails after one refresh, when the
+rubric is invalid, or when a script exits non-zero — those stops get the plain message for that
+step instead.
 
 ## Error Handling
 
@@ -344,17 +429,35 @@ for that step instead.
   page once; for any other command, do the same by hand. If still rate limited, report it and stop.
 - **Batch refused** (`record-batch.mjs` exit 2) — the message lists every missing rule or invalid
   tag; complete the mapping and record the batch again.
+- **Summary chunk refused** (`proposal.mjs` exit 2) — the message names each id and what is wrong
+  (separator, arrow, truncation mark, length); nothing was recorded. Rewrite those summaries and
+  record the chunk again.
+- **Render refused** (`proposal.mjs --render` exit 2) — an incomplete classification (finish the
+  named batches), a missing summary (record the listed ids), or an existing `proposal.md` (ask the
+  admin before `--replace`). Nothing was written; do not work around it by writing the file
+  yourself.
+- **Readback refused** (`approve.mjs` exit 2) — no `proposal.md` yet, or its frontmatter `run_id`
+  belongs to another run. Point at the right run folder; never edit the frontmatter to match.
+- **Invalid or removed rows in the readback** (exit 0) — not a failure: report them by line number
+  with the reason, say they are excluded, and let the admin fix the file and re-read it back.
 
 ## Guardrails
 
 - **No Review Standards writes in this version.** Every Qodo command here (`--version`,
   `read whoami`, `tools --json`, `tools --refresh`, `read tools rules`, and `read rules list`
   inside the export script) leaves the workspace's rules untouched. Do not call `qodo rules update`
-  or any other mutating tool. The only files written are `${QODO_HOME:-$HOME/.qodo}/calibrate/rubric.yaml`
-  (first run only) and the run folder `${QODO_HOME:-$HOME/.qodo}/calibrate/runs/<run-id>/`
-  (`export.json`, `batches/`, `rubric-snapshot.yaml`, `classification.json`) — plus the CLI's
+  or any other mutating tool, and do not generate `apply.sh` or write `receipt.md`. The only files
+  written are `${QODO_HOME:-$HOME/.qodo}/calibrate/rubric.yaml` (first run only),
+  `${QODO_HOME:-$HOME/.qodo}/calibrate/decisions.jsonl` (the ledger — skip entries after the
+  admin confirms, `released` entries on a reconsider), and the run folder
+  `${QODO_HOME:-$HOME/.qodo}/calibrate/runs/<run-id>/` (`export.json`, `batches/`,
+  `rubric-snapshot.yaml`, `classification.json`, `summaries.json`, `proposal.md`) — plus the CLI's
   own catalog cache, which `qodo tools --refresh` refreshes as part of the mandated stale-catalog
   recovery. Write nothing into the skill install directory or inside a repository.
+- **Nothing is recorded before the admin's explicit yes.** The readback writes nothing. The
+  confirmation appends `skip` entries only; approvals and overrides are recorded after they are
+  applied, which this version does not do. Never edit the admin's `proposal.md`, and never
+  `--replace` it without asking.
 - **Never fabricate a rule id, scope, or example.** Resolve or ask; an empty result from `list`
   is a valid outcome, not an error.
 - **Classify from the full content.** Never tag a rule from its name or a summary, never skip a
@@ -368,8 +471,7 @@ for that step instead.
   the calibration apply step, writes exactly one field (`severity`), records a per-row receipt that
   supports revert, and does not exist in this version.
 
-Lead with the bottom line — what was exported and classified, or what stopped the run and why —
-then the specifics. A short, accurate status beats a wall of JSON.
+Lead with the bottom line — what was proposed, what the admin decided, or what stopped the run
+and why — then the specifics. A short, accurate status beats a wall of JSON.
 
-Calibration steps — propose, approve, apply, verify, revert — follow in a later version of this
-skill.
+Apply, verify, and revert follow in a later version of this skill.

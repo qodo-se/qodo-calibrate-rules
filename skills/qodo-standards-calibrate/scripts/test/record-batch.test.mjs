@@ -33,9 +33,15 @@ test('rows derive proposed severity, vetoes, unknown severity, and numeric order
   assert.equal(res.json.status, 'recorded');
   const rows = readJson(join(runDir, 'classification.json'));
   const by = Object.fromEntries(rows.map((r) => [r.rule_id, r]));
-  assert.deepEqual(Object.keys(by[1]), ['rule_id', 'name', 'category', 'current', 'tag', 'proposed', 'direction', 'guard_hits', 'needs_decision', 'batch']);
+  assert.deepEqual(Object.keys(by[1]), ['rule_id', 'name', 'category', 'current', 'tag', 'rubric_proposed', 'proposed', 'direction', 'guard_hits', 'needs_decision', 'batch']);
   // override {documentation: warning} propagates
   assert.equal(by[1].proposed, 'warning'); assert.equal(by[1].direction, 'increase'); assert.equal(by[1].needs_decision, false);
+  // rubric_proposed is the snapshot severity for the tag, before any veto; proposed is unchanged
+  assert.equal(by[1].rubric_proposed, 'warning');
+  assert.equal(by[3].rubric_proposed, 'recommendation'); // naming default, vetoed back to warning
+  assert.equal(by[5].rubric_proposed, 'warning'); // api-contract default, unknown current severity
+  assert.equal(by[6].rubric_proposed, 'warning');
+  for (const row of rows) assert.ok(['error', 'warning', 'recommendation'].includes(row.rubric_proposed));
   // category prior veto: Security + naming at warning
   assert.equal(by[2].needs_decision, true); assert.equal(by[2].proposed, 'warning'); assert.equal(by[2].direction, 'none');
   // guard veto

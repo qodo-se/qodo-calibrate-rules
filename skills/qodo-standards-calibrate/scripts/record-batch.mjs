@@ -8,7 +8,9 @@
 // --tags is a JSON object {"<ruleId>": "<tag>"} covering every rule in batches/batch-NNN.json.
 // The script derives proposed severity from <run-dir>/rubric-snapshot.yaml, applies the two
 // vetoes on decreases (keyword guard hit; recommendation-default tag on a Security/Compliance
-// rule), and appends the rows to <run-dir>/classification.json. A batch already present in
+// rule), and appends the rows to <run-dir>/classification.json. Each row keeps the rubric's own
+// severity for the tag in `rubric_proposed` — the value a veto took away, and the target the
+// proposal offers for a needs-a-decision row. A batch already present in
 // the file is skipped, which is what makes a re-run resumable; --replace drops that batch's
 // existing rows first so a correction can be re-recorded. Read-only against the workspace.
 //
@@ -130,6 +132,7 @@ function classify(rule, tag, severities, batch) {
     category: rule.category,
     current,
     tag,
+    rubric_proposed: severities[tag],
     proposed: current,
     direction: 'none',
     guard_hits: guardHits,
