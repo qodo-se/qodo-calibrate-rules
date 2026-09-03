@@ -48,7 +48,7 @@ const skipLedger = (ctx) => ledgerLines(ctx.ledger).filter((e) => e.decision ===
 
 test('--generate writes apply.sh and receipt.md from the confirmed readback', () => {
   // Approve 99 and 101, override 103, make 102 an invalid override, skip 104 — plus the two
-  // needs-a-decision rows, which stay unchecked and therefore skipped.
+  // needs-a-decision rows, which stay `[?]` and are therefore deferred, not skipped.
   const ctx = generated({
     edits: [
       ['- [x] 102 ', retarget('critical')],
@@ -56,12 +56,12 @@ test('--generate writes apply.sh and receipt.md from the confirmed readback', ()
       ['- [x] 104 ', uncheck],
     ],
   });
-  assert.deepEqual(ctx.readback.counts, { approve: 2, skip: 3, override: 1, invalid: 1, removed: 0 });
+  assert.deepEqual(ctx.readback.counts, { approve: 2, skip: 1, defer: 2, override: 1, invalid: 1, removed: 0 });
   assert.equal(ctx.generate.status, 'generated');
   assert.equal(ctx.generate.rows_to_apply, 3);
   assert.deepEqual(ctx.generate.rule_ids, [99, 101, 103]); // file order
   assert.deepEqual(ctx.generate.invalid.map((i) => i.rule_id), [102]);
-  assert.equal(ctx.generate.skipped, 3);
+  assert.equal(ctx.generate.skipped, 1);
   assert.equal(ctx.generate.source, 'proposal.md');
 
   const script = readText(ctx.script);
@@ -71,11 +71,15 @@ test('--generate writes apply.sh and receipt.md from the confirmed readback', ()
   assert.equal(spawnSync('sh', ['-n', ctx.script]).status, 0, 'generated script must parse');
   assert.ok(statSync(ctx.script).mode & 0o100, 'apply.sh is executable');
 
-  // Receipt: apply rows pending, skips tokened, the invalid row untouched.
+  // Receipt: apply rows pending, the explicit skip tokened, deferred rows carry no token, and
+  // the invalid row is untouched.
   assert.deepEqual(receiptStatuses(ctx.runDir), [
     [99, 'pending'], [101, 'pending'], [102, 'pending'], [103, 'pending'],
-    [104, 'skipped'], [105, 'skipped'], [106, 'skipped'],
+    [104, 'skipped'], [105, 'pending'], [106, 'pending'],
   ]);
+  for (const id of CALIB_DECISIONS) {
+    assert.ok(readText(ctx.receipt).split('\n').find((l) => l.startsWith(`- [?] ${id} `)).endsWith(`/rules/${id}`), 'a deferred row gets no · skipped token');
+  }
   // The invalid row is reported and left exactly as the admin wrote it — no token, no rewrite.
   const invalidLine = readText(ctx.receipt).split('\n').find((l) => l.startsWith('- [x] 102 '));
   assert.ok(invalidLine.endsWith('https://app.qodo.ai/rules/102'));
@@ -104,7 +108,8 @@ test('--generate refuses a run with no proposal at all', () => {
 });
 
 test('with every row unchecked there is nothing to apply and no script', () => {
-  const ctx = confirmed({ edits: [['- [x] ', uncheck]] });
+  // Deferred rows must be unchecked explicitly: `[?]` is not a skip.
+  const ctx = confirmed({ edits: [['- [x] ', uncheck], ['- [?] ', (l) => l.replace('- [?] ', '- [ ] ')]] });
   const g = generate(ctx);
   assert.equal(g.status, 0, g.stderr);
   assert.equal(g.json.status, 'nothing_to_apply');
@@ -115,6 +120,27 @@ test('with every row unchecked there is nothing to apply and no script', () => {
   assert.ok(receiptStatuses(ctx.runDir).every(([, s]) => s === 'skipped'));
 });
 
+test('a deferred row is left out of the script, gets no · skipped token, and is reported', () => {
+  // 106 is approved, 105 stays `[?]`: exactly one deferred row.
+  const ctx = generated({ edits: [[`- [?] ${CALIB_DECISIONS[1]} `, (l) => l.replace('- [?] ', '- [x] ')]] });
+  assert.equal(ctx.readback.counts.defer, 1);
+  assert.equal(ctx.generate.counts.defer, 1);
+  assert.equal(ctx.generate.skipped, 0);
+  assert.equal(ctx.generate.skips_recorded, 0);
+  assert.equal(ctx.generate.rule_ids.includes(CALIB_DECISIONS[0]), false);
+  assert.equal(readText(ctx.script).includes(`row ${CALIB_DECISIONS[0]} `), false);
+
+  const deferredRow = readText(ctx.receipt).split('\n').find((l) => l.includes(`] ${CALIB_DECISIONS[0]} `));
+  assert.ok(deferredRow.startsWith(`- [?] ${CALIB_DECISIONS[0]} `), deferredRow);
+  assert.equal(deferredRow.includes('· skipped'), false);
+
+  const res = apply(ctx, 'ok');
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.json.counts.deferred_by_admin, 1);
+  assert.equal(res.json.counts.skipped, 0);
+  assert.equal(ledgerLines(ctx.ledger).some((e) => e.rule_id === CALIB_DECISIONS[0]), false);
+});
+
 // ---------------------------------------------------------------------------------------
 // The loop
 
@@ -123,7 +149,7 @@ test('the happy loop applies every row, records the ledger, and exits 0', () => 
   assert.equal(ctx.generate.rows_to_apply, 5);
   const res = apply(ctx, 'ok');
   assert.equal(res.status, 0, res.stderr);
-  assert.deepEqual(res.json.counts, { applied: 5, failed: 0, deferred: 0, pending: 0, skipped: 2, invalid: 0 });
+  assert.deepEqual(res.json.counts, { applied: 5, failed: 0, deferred: 0, pending: 0, skipped: 0, deferred_by_admin: 2, invalid: 0 });
   assert.deepEqual(res.json.non_applied, []);
   assert.equal(res.json.aborted, false);
   assert.equal(res.json.exit_code, 0);
@@ -131,7 +157,7 @@ test('the happy loop applies every row, records the ledger, and exits 0', () => 
 
   assert.deepEqual(receiptStatuses(ctx.runDir), [
     [99, 'applied'], [101, 'applied'], [102, 'applied'], [103, 'applied'], [104, 'applied'],
-    [105, 'skipped'], [106, 'skipped'],
+    [105, 'pending'], [106, 'pending'],
   ]);
   assert.equal(applyResults(ctx.runDir).length, 5);
   assert.ok(applyResults(ctx.runDir).every((r) => r.status === 'applied' && r.attempt === 1));
@@ -143,7 +169,7 @@ test('the happy loop applies every row, records the ledger, and exits 0', () => 
   const ledger = appliedLedger(ctx);
   assert.deepEqual(ledger.map((e) => e.rule_id), CALIB_PRECHECKED.slice().sort((a, b) => a - b));
   assert.deepEqual([...new Set(ledger.map((e) => e.decision))], ['approve']);
-  assert.deepEqual(skipLedger(ctx).map((e) => e.rule_id).sort((a, b) => a - b), CALIB_DECISIONS);
+  assert.deepEqual(skipLedger(ctx), []); // the deferred rows are recorded nowhere
   for (const entry of ledger) {
     assert.ok(entry.content_hash.startsWith('sha256:'));
     assert.equal(entry.run_id, ctx.runId);
@@ -191,7 +217,7 @@ test('any other error fails just that row, the loop continues, and the report na
   const res = apply(ctx, 'fail:103:MT-VALIDATION');
   assert.equal(res.status, EXIT.report);
   assert.equal(statusFor(ctx, 103), 'failed(MT-VALIDATION)');
-  assert.deepEqual(res.json.counts, { applied: 4, failed: 1, deferred: 0, pending: 0, skipped: 2, invalid: 0 });
+  assert.deepEqual(res.json.counts, { applied: 4, failed: 1, deferred: 0, pending: 0, skipped: 0, deferred_by_admin: 2, invalid: 0 });
   assert.deepEqual(res.json.non_applied, [{ rule_id: 103, status: 'failed', code: 'MT-VALIDATION' }]);
   assert.match(res.stderr, /103 failed\(MT-VALIDATION\)/);
   assert.deepEqual(updateLog(ctx.log).map((c) => c.rule_id), ['99', '101', '102', '103', '104']); // 104 still called
@@ -228,7 +254,7 @@ test('a rate limit past the retry ceiling defers the row and exits 3', () => {
   assert.equal(res.status, EXIT.report);
   assert.equal(statusFor(ctx, 102), 'deferred');
   assert.equal(applyResults(ctx.runDir).filter((r) => r.rule_id === 102).length, 6); // 1 call + 5 retries
-  assert.deepEqual(res.json.counts, { applied: 4, failed: 0, deferred: 1, pending: 0, skipped: 2, invalid: 0 });
+  assert.deepEqual(res.json.counts, { applied: 4, failed: 0, deferred: 1, pending: 0, skipped: 0, deferred_by_admin: 2, invalid: 0 });
   assert.deepEqual(res.json.non_applied, [{ rule_id: 102, status: 'deferred', code: 'MT-RATE-LIMITED' }]);
   assert.match(res.stderr, /102 deferred\(MT-RATE-LIMITED\)/);
   assert.equal(appliedLedger(ctx).some((e) => e.rule_id === 102), false);
@@ -243,10 +269,10 @@ test('an auth error aborts the loop and leaves every later row pending', () => {
   assert.equal(applyResults(ctx.runDir).length, 3); // and no --row result for rows 4 and 5 either
   assert.deepEqual(receiptStatuses(ctx.runDir), [
     [99, 'applied'], [101, 'applied'], [102, 'pending'], [103, 'pending'], [104, 'pending'],
-    [105, 'skipped'], [106, 'skipped'],
+    [105, 'pending'], [106, 'pending'],
   ]);
   assert.equal(res.json.aborted, true);
-  assert.deepEqual(res.json.counts, { applied: 2, failed: 0, deferred: 0, pending: 3, skipped: 2, invalid: 0 });
+  assert.deepEqual(res.json.counts, { applied: 2, failed: 0, deferred: 0, pending: 3, skipped: 0, deferred_by_admin: 2, invalid: 0 });
   assert.deepEqual(res.json.non_applied, [
     { rule_id: 102, status: 'pending', code: 'not_logged_in' },
     { rule_id: 103, status: 'pending', code: null },
@@ -286,7 +312,8 @@ test('a launcher that cannot be spawned aborts the loop', () => {
   assert.equal(res.status, EXIT.report);
   assert.equal(res.json.aborted, true);
   assert.equal(res.json.counts.pending, CALIB_PRECHECKED.length);
-  assert.deepEqual(receiptStatuses(ctx.runDir).filter(([, s]) => s === 'pending').map(([id]) => id), CALIB_PRECHECKED.slice().sort((a, b) => a - b));
+  // the deferred rows carry no token either, so they read `pending` in the receipt too
+  assert.deepEqual(receiptStatuses(ctx.runDir).filter(([, s]) => s === 'pending').map(([id]) => id), [...CALIB_PRECHECKED, ...CALIB_DECISIONS].sort((a, b) => a - b));
   assert.equal(applyResults(ctx.runDir).filter((r) => r.status === 'aborted').length, 1);
   assert.equal(applyResults(ctx.runDir).length, 1); // the rows after the abort were never attempted
 });
@@ -366,12 +393,13 @@ test("this run's own ledger entries never hold this run's rows", () => {
   // The apply wrote approve entries for all five rows, and the skips are recorded too — yet a
   // repeated readback of the same run still sees every row it rendered, so a resume works.
   assert.equal(appliedLedger(ctx).length, 5);
-  assert.equal(skipLedger(ctx).length, 2);
+  assert.equal(skipLedger(ctx).length, 0); // the two deferred rows are never recorded
   const again = run(APPROVE, ['--run', ctx.runDir, '--readback'], { env: ctx.env });
   assert.equal(again.status, 0, again.stderr);
   assert.equal(again.json.rendered_rows, 7);
   assert.equal(again.json.counts.approve + again.json.counts.override, 5);
-  assert.equal(again.json.counts.skip, 2);
+  assert.equal(again.json.counts.skip, 0);
+  assert.equal(again.json.counts.defer, 2);
   assert.deepEqual(again.json.invalid, []);
 });
 
@@ -402,18 +430,20 @@ test('a later run holds an applied override and re-proposes a rule whose severit
   const rendered = run(PROPOSAL, ['--run', nextDir, '--render', '--workspace-id', 'ws-1'], { env: ctx.env });
   assert.equal(rendered.status, 0, rendered.stderr);
 
-  // Held, and counted in the footer: the override (its content hash is unchanged) and the two
-  // skips. 99, 102 and 103 now sit at the rubric's own value, so they are simply unchanged and
-  // never reach the proposal at all — the proposal is a diff.
-  assert.equal(rendered.json.held_by_prior_decision, 3);
+  // Held, and counted in the footer: the override alone (its content hash is unchanged). 99, 102
+  // and 103 now sit at the rubric's own value, so they are simply unchanged and never reach the
+  // proposal at all — the proposal is a diff. The deferred rows were recorded nowhere, so they
+  // come back as needs-a-decision rows.
+  assert.equal(rendered.json.held_by_prior_decision, 1);
   const text = readText(join(nextDir, 'proposal.md'));
-  for (const id of [101, 105, 106]) assert.equal(text.includes(`] ${id} ·`), false, `rule ${id} must be held`);
+  assert.equal(text.includes('] 101 ·'), false, 'rule 101 must be held');
   for (const id of [99, 102, 103]) assert.equal(text.includes(`] ${id} ·`), false, `rule ${id} is unchanged`);
-  assert.match(text, /^Held by prior decision: 3 rules/m);
+  for (const id of CALIB_DECISIONS) assert.match(text, new RegExp(`^- \\[\\?\\] ${id} · `, 'm'));
+  assert.match(text, /^Held by prior decision: 1 rules/m);
 
   // Re-proposed: an `approve` holds only while the rule still sits at the approved severity, so
   // the drifted rule comes back.
-  assert.equal(rendered.json.rows, 1);
+  assert.equal(rendered.json.rows, 3); // the drifted rule plus the two deferred rows
   assert.match(text, /^- \[x\] 104 · .* · warning → error · /m);
 
   // Releasing the override puts it back too, which is what the footer's escape hatch promises.
@@ -421,7 +451,7 @@ test('a later run holds an applied override and re-proposes a rule whose severit
   assert.equal(released.status, 0, released.stderr);
   const again = run(PROPOSAL, ['--run', nextDir, '--render', '--workspace-id', 'ws-1', '--replace'], { env: ctx.env });
   assert.equal(again.status, 0, again.stderr);
-  assert.equal(again.json.held_by_prior_decision, 2);
+  assert.equal(again.json.held_by_prior_decision, 0);
   assert.match(readText(join(nextDir, 'proposal.md')), /^- \[x\] 101 · /m);
 });
 
@@ -464,15 +494,16 @@ test('apply modes are mutually exclusive and --write-receipt needs a receipt', (
 });
 
 test('the needs-a-decision rows the admin checks are applied like any other row', () => {
-  const ctx = generated({ edits: [[`- [ ] ${CALIB_DECISIONS[0]} `, (l) => l.replace('- [ ] ', '- [x] ')]] });
+  const ctx = generated({ edits: [[`- [?] ${CALIB_DECISIONS[0]} `, (l) => l.replace('- [?] ', '- [x] ')]] });
   assert.equal(ctx.generate.rows_to_apply, 6);
   assert.ok(ctx.generate.rule_ids.includes(CALIB_DECISIONS[0]));
   const res = apply(ctx, 'ok');
   assert.equal(res.status, 0, res.stderr);
   assert.equal(statusFor(ctx, CALIB_DECISIONS[0]), 'applied');
-  assert.equal(statusFor(ctx, CALIB_DECISIONS[1]), 'skipped');
+  assert.equal(statusFor(ctx, CALIB_DECISIONS[1]), 'pending'); // still deferred, not skipped
   assert.equal(res.json.counts.applied, 6);
-  assert.equal(res.json.counts.skipped, 1);
+  assert.equal(res.json.counts.skipped, 0);
+  assert.equal(res.json.counts.deferred_by_admin, 1);
 });
 
 // ---------------------------------------------------------------------------------------
@@ -506,7 +537,7 @@ test('a stale script stops the loop and the report still prints, aborted', () =>
   writeFileSync(ctx.receipt, readText(ctx.receipt).replace('- [x] 102 ', '- [ ] 102 '));
   const res = apply(ctx, 'ok');
   assert.equal(res.status, EXIT.report, res.stderr);
-  assert.match(res.stderr, /rule 102 is unchecked/);
+  assert.match(res.stderr, /rule 102 is not checked/);
   assert.match(res.stderr, /apply\.sh is stale/);
   // Rows 1-2 applied, the stale row and everything after it untouched.
   assert.deepEqual(updateLog(ctx.log).map((c) => c.rule_id), ['99', '101']);
@@ -515,7 +546,7 @@ test('a stale script stops the loop and the report still prints, aborted', () =>
     [103, 'pending', null], [104, 'pending', null],
   ]);
   // 102 is now a skip, so it is no longer an apply row at all — it is counted as skipped.
-  assert.equal(res.json.counts.skipped, 3);
+  assert.equal(res.json.counts.skipped, 1);
   assert.equal(applyResults(ctx.runDir).filter((r) => r.status === 'aborted' && r.code === 'stale_script').length, 1);
 });
 
@@ -638,7 +669,7 @@ test('--row refuses a row the admin unchecked after the script was generated', (
   writeFileSync(ctx.receipt, readText(ctx.receipt).replace('- [x] 99 ', '- [ ] 99 '));
   const res = run(APPLY, ['--run', ctx.runDir, '--row', '99', '--target', 'recommendation', '--qodo', FAKE_QODO], { env: { ...ctx.env, FAKE_UPDATE_LOG: ctx.log } });
   assert.equal(res.status, EXIT.refused);
-  assert.match(res.stderr, /is unchecked in .*receipt\.md/);
+  assert.match(res.stderr, /is not checked in .*receipt\.md/);
   assert.deepEqual(updateLog(ctx.log), []);
 });
 
@@ -652,7 +683,8 @@ test('--row refuses a row the receipt already marks skipped', () => {
 });
 
 test('--generate never puts a skipped row back in the script', () => {
-  const ctx = generated();
+  // 105 is explicitly skipped (not deferred), so the receipt carries its `· skipped` token.
+  const ctx = generated({ edits: [['- [?] 105 ', (l) => l.replace('- [?] ', '- [ ] ')]] });
   // The admin ticked a row back on after it was marked skipped: the token wins.
   writeFileSync(ctx.receipt, readText(ctx.receipt).replace(/(- \[ \] 105 .*?) · skipped$/m, '- [x] 105 $1 · skipped').replace('- [x] 105 - [ ] 105 ', '- [x] 105 '));
   const marked = readText(ctx.receipt).split('\n').find((l) => l.includes('] 105 '));
@@ -706,8 +738,8 @@ test('--generate records the admin\'s skips itself, and adds none when they are 
   assert.deepEqual(ledgerLines(ctx.ledger), []);
   const g = generate(ctx);
   assert.equal(g.status, 0, g.stderr);
-  assert.equal(g.json.skips_recorded, 3);
-  assert.deepEqual(skipLedger(ctx).map((e) => e.rule_id).sort((a, b) => a - b), [104, 105, 106]);
+  assert.equal(g.json.skips_recorded, 1); // only the explicit skip; the deferred rows are not
+  assert.deepEqual(skipLedger(ctx).map((e) => e.rule_id).sort((a, b) => a - b), [104]);
   for (const entry of skipLedger(ctx)) {
     assert.equal(entry.run_id, ctx.runId);
     assert.ok(entry.content_hash.startsWith('sha256:'));
@@ -718,7 +750,7 @@ test('--generate records the admin\'s skips itself, and adds none when they are 
   assert.equal(record.status, 0, record.stderr);
   assert.equal(record.json.recorded, 0);
   assert.equal(record.json.status, 'already_recorded');
-  assert.equal(skipLedger(ctx).length, 3);
+  assert.equal(skipLedger(ctx).length, 1);
 });
 
 test('--write-receipt reports the invalid rows alongside the counts', () => {

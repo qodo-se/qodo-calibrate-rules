@@ -60,7 +60,7 @@
   .counts div { display: flex; flex-direction: column; gap: 2px; }
   .counts b { font-size: 16px; font-weight: 500; }
   .counts small { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--t5); }
-  #c-approve { color: var(--mint); } #c-skip { color: var(--t3); } #c-undecided { color: var(--t6); } #c-override { color: var(--purple-tint); }
+  #c-approve { color: var(--mint); } #c-skip { color: var(--t3); } #c-deferred { color: var(--t6); } #c-override { color: var(--purple-tint); }
 
   .filters { display: flex; flex-direction: column; gap: 8px; }
   #search { width: 100%; padding: 9px 12px; background: var(--input); border: 1px solid var(--b10); border-radius: 8px; color: #fff; font-size: 13px; outline: none; }
@@ -184,7 +184,7 @@
       <div class="counts">
         <div><b id="c-approve">0</b><small>approve</small></div>
         <div><b id="c-skip">0</b><small>skip</small></div>
-        <div><b id="c-undecided">0</b><small>undecided</small></div>
+        <div><b id="c-deferred">0</b><small>deferred</small></div>
         <div><b id="c-override">0</b><small>override</small></div>
       </div>
     </div>

@@ -103,6 +103,7 @@ function main() {
       direction: row.direction,
       needs_decision: Boolean(row.needs_decision),
       checked: !row.needs_decision,
+      deferred: Boolean(row.needs_decision),
     };
   });
   const sections = buildSections(displayRows);

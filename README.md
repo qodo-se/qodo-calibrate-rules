@@ -27,15 +27,15 @@ is not this skill's job — use `qodo-manage-standards` for that.
    agent reads only the scripts' status lines.
 5. **Propose** — `proposal.md`: a markdown checklist, one row per changing rule with its id,
    name, `current → proposed`, any guard terms, and the portal link. Rows the rubric
-   proposes start checked; guard or category conflicts start unchecked. Unchanged rules never
+   proposes start checked; guard or category conflicts start deferred (`[?]`). Unchanged rules never
    appear, and rules the admin already decided are held out and counted in the footer.
-6. **Approve** — the admin edits the file in any editor (uncheck to skip, edit the value after
-   the arrow to override), or reviews it in the bundled browser page (`stage-review.mjs` writes a
+6. **Approve** — the admin edits the file in any editor (uncheck to skip, `[?]` to defer to the
+   next run, edit the value after the arrow to override), or reviews it in the bundled browser page (`stage-review.mjs` writes a
    self-contained `review.html` into the run folder; approve / skip / override per row, bulk
    actions, keyboard flow, guard-term highlighting; *Commit decisions* downloads the edited
    `proposal.md`), and says when they are done. The skill reads it back — counts,
    invalid values by row, deleted rows — and asks for confirmation before writing anything. The
-   rules they unchecked go into the ledger at this point (and again when the loop is generated,
+   rules they unchecked go into the ledger at this point; deferred rows are never recorded (and again when the loop is generated,
    so a missed step cannot lose them).
 7. **Apply** — the confirmed decisions become `apply.sh`, one `qodo rules update` per approved
    row, run as a single shell invocation. Each row lands in `receipt.md` as `applied`,

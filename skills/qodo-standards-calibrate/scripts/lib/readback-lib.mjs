@@ -1,7 +1,8 @@
 // readback-lib.mjs — the one decision parser. Node built-ins only.
 //
-// Reads the admin's edited checklist back into decisions: checkbox = approve/skip, an edited
-// target = override, anything else = invalid and excluded. Both callers share it so the apply
+// Reads the admin's edited checklist back into decisions: `[x]` = approve, `[ ]` = skip,
+// `[?]` = defer (no decision, never recorded), an edited target = override, anything else =
+// invalid and excluded. Both callers share it so the apply
 // step can never disagree with the counts the admin confirmed:
 //
 //   approve.mjs  readback(runDir)                              — reads proposal.md
@@ -19,7 +20,7 @@ import { appendEntries, contentHash, isHeld, latestByRule, ledgerPath, makeEntry
 import { hasContent, loadRun, isRendered, parseProposal, RunError, targetFor } from './proposal-lib.mjs';
 
 export function readbackText(counts, invalid) {
-  let text = `${counts.approve} approve · ${counts.skip} skip · ${counts.override} override · ${counts.invalid} invalid override`;
+  let text = `${counts.approve} approve · ${counts.skip} skip · ${counts.defer} deferred · ${counts.override} override · ${counts.invalid} invalid override`;
   if (invalid.length) {
     const byReason = new Map();
     for (const row of invalid) {
@@ -97,6 +98,11 @@ export function readback(runDir, { file = 'proposal.md', text = null } = {}) {
     }
     const rendered = targetFor(row, run.snapshot);
     const entry = { line: parsedRow.line, rule_id: row.rule_id, current: row.current, target: parsedRow.target, rendered_target: rendered, tag: row.tag };
+    // `[?]` defers: no decision, nothing recorded, proposed again next run. `[ ]` is a skip.
+    if (parsedRow.deferred) {
+      rows.push({ ...entry, decision: 'defer', target: rendered });
+      continue;
+    }
     if (!parsedRow.checked) {
       rows.push({ ...entry, decision: 'skip', target: rendered });
       continue;
@@ -116,6 +122,7 @@ export function readback(runDir, { file = 'proposal.md', text = null } = {}) {
   const counts = {
     approve: rows.filter((r) => r.decision === 'approve').length,
     skip: rows.filter((r) => r.decision === 'skip').length,
+    defer: rows.filter((r) => r.decision === 'defer').length,
     override: rows.filter((r) => r.decision === 'override').length,
     invalid: invalid.length,
     removed: removedIds.length,

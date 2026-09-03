@@ -330,7 +330,7 @@ function applyRow(args, runDir, runId) {
     fail(EXIT.refused, `${why} ${stale}`);
   };
   if (row.status === 'skipped') refuse('stale_script', `rule ${args.row} is already \`· skipped\` in ${receiptPath}.`);
-  if (!row.checked) refuse('stale_script', `rule ${args.row} is unchecked in ${receiptPath} — the admin skipped it.`);
+  if (!row.checked) refuse('stale_script', `rule ${args.row} is not checked in ${receiptPath} — the admin skipped or deferred it.`);
   if (String(row.target) !== String(args.target)) {
     refuse('stale_script', `rule ${args.row} reads "${row.target}" in ${receiptPath} but apply.sh asks for "${args.target}".`);
   }
@@ -418,6 +418,7 @@ function writeReceipt(runDir, runId) {
     deferred: applyRows.filter((r) => stateOf(r) === 'deferred').length,
     pending: applyRows.filter((r) => stateOf(r) === 'pending').length,
     skipped: result.rows.filter((r) => r.decision === 'skip').length,
+    deferred_by_admin: result.rows.filter((r) => r.decision === 'defer').length,
     invalid: result.invalid.length,
   };
   const nonApplied = applyRows

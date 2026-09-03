@@ -10,7 +10,7 @@
 // global is absent the page falls back to fetching ./data/* — handy for developing against a
 // static server, not something the skill uses.
 
-export const ROW_RE = /^- \[( |x|X)\] (\d+) · (.+) · (\S+) → (\S+)(?: · guard: ([^·]+))? · (\S+)\s*$/;
+export const ROW_RE = /^- \[( |x|X|\?)\] (\d+) · (.+) · (\S+) → (\S+)(?: · guard: ([^·]+))? · (\S+)\s*$/;
 export const TAX = ['documentation', 'naming', 'style-formatting', 'import-order', 'test-hygiene', 'error-handling', 'logging', 'api-contract', 'architecture', 'correctness-contract', 'security-control', 'data-integrity', 'secrets-handling'];
 export const SEVERITIES = ['error', 'warning', 'recommendation'];
 export const P = { error: 'P0', warning: 'P1', recommendation: 'P2' };
@@ -31,7 +31,8 @@ export function parseProposal(text) {
     rows.push({
       line: i,
       id: +m[2],
-      prechecked: m[1] !== ' ',
+      prechecked: m[1] === 'x' || m[1] === 'X',
+      deferred: m[1] === '?',
       name: mid[0],
       summary: mid.slice(1).join(' · '),
       current: m[4],
@@ -64,12 +65,12 @@ export function indexExport(exported) {
 
 // ---- decisions -----------------------------------------------------------------------------
 
-// A decision is { d: 'approve'|'skip'|'override', target, reviewed }. An undecided row is an
-// implicit, unreviewed skip: it leaves the page unchecked.
+// A decision is { d: 'approve'|'skip'|'override', target, reviewed }. An undecided row is a
+// deferral: it leaves the page as `[?]`, is never recorded, and is proposed again next run.
 export function effective(decisions, row) {
   const d = decisions[row.id];
   if (d && d.d) return d;
-  return { d: 'skip', reviewed: false };
+  return { d: 'defer', reviewed: false };
 }
 
 export function groupKey(row, k) {
@@ -87,19 +88,20 @@ export function groupOrder(keys) {
 }
 
 export function tally(rows, decisions, cls) {
-  let approve = 0, skip = 0, override = 0, reviewed = 0;
+  let approve = 0, skip = 0, override = 0, reviewed = 0, deferred = 0;
   const after = { error: 0, warning: 0, recommendation: 0 };
   Object.values(cls).forEach((k) => { if (after[k.current] != null) after[k.current]++; });
   rows.forEach((r) => {
     const d = effective(decisions, r);
     if (d.reviewed) reviewed++;
     if (d.d === 'approve') approve++;
-    else if (d.d === 'skip') { if (d.reviewed) skip++; }
+    else if (d.d === 'skip') skip++;
+    else if (d.d === 'defer') deferred++;
     else override++;
     const to = d.d === 'approve' ? r.target : d.d === 'override' ? d.target : null;
     if (to && after[r.current] != null && after[to] != null) { after[r.current]--; after[to]++; }
   });
-  return { approve, skip, override, reviewed, undecided: rows.length - reviewed, after };
+  return { approve, skip, override, reviewed, deferred, after };
 }
 
 // ---- outputs -------------------------------------------------------------------------------
@@ -112,7 +114,7 @@ export function buildProposal(rawProposal, rows, decisions) {
     const d = effective(decisions, r);
     let l = lines[r.line];
     if (l === undefined) return;
-    l = l.replace(/^- \[( |x|X)\]/, d.d === 'skip' ? '- [ ]' : '- [x]');
+    l = l.replace(/^- \[( |x|X|\?)\]/, d.d === 'skip' ? '- [ ]' : d.d === 'defer' ? '- [?]' : '- [x]');
     if (d.d === 'override' && d.target) l = l.replace(' → ' + r.target + ' · ', ' → ' + d.target + ' · ');
     lines[r.line] = l;
   });
@@ -262,7 +264,7 @@ class ReviewApp {
     this.$('#progress-fill').style.width = (s.rows.length ? (t.reviewed / s.rows.length) * 100 : 0) + '%';
     this.$('#c-approve').textContent = t.approve;
     this.$('#c-skip').textContent = t.skip;
-    this.$('#c-undecided').textContent = t.undecided;
+    this.$('#c-deferred').textContent = t.deferred;
     this.$('#c-override').textContent = t.override;
     this.$('#f-undecided').classList.toggle('on', s.undecidedOnly);
     this.$('#f-guard').classList.toggle('on', s.guardOnly);
@@ -288,25 +290,25 @@ class ReviewApp {
     btn.textContent = impl ? (impl.done ? 'Decisions committed ✓' : 'Committing…') : 'Commit decisions';
     const steps = this.$('#steps');
     if (impl) {
-      const labels = this.implSteps(t.approve, t.override, t.skip + t.undecided);
+      const labels = this.implSteps(t.approve, t.override, t.skip, t.deferred);
       steps.hidden = false;
       steps.innerHTML = labels.map((label, i) => {
         const st = impl.step > i ? 'done' : impl.step === i ? 'active' : 'todo';
         return `<div class="step ${st}"><span class="step-dot"></span><span>${esc(label)}</span></div>`;
       }).join('');
     } else { steps.hidden = true; steps.innerHTML = ''; }
-    this.$('#hint').textContent = s.hint || (t.undecided
-      ? t.undecided + ' undecided rows will be exported as skip. Writes proposal.md in the skill’s row grammar.'
+    this.$('#hint').textContent = s.hint || (t.deferred
+      ? t.deferred + ' undecided rows will be deferred to the next run, not skipped. Writes proposal.md in the skill’s row grammar.'
       : 'Every row decided. Writes proposal.md in the skill’s row grammar.');
     const u = this.$('#undo');
     u.hidden = !s.undo.length;
     u.textContent = s.undo.length ? 'Undo · ' + s.undo[0].label : '';
   }
 
-  implSteps(a, o, k) {
+  implSteps(a, o, k, u) {
     return [
-      'Validate ' + (a + o + k) + ' rows · ' + a + ' approve · ' + o + ' override · ' + k + ' skip',
-      'Write proposal.md (checked = approve, edited → = override)',
+      'Validate ' + (a + o + k + u) + ' rows · ' + a + ' approve · ' + o + ' override · ' + k + ' skip · ' + u + ' deferred',
+      'Write proposal.md (checked = approve, edited → = override, [?] = deferred)',
       'Hand off to agent → readback → apply',
     ];
   }
@@ -365,6 +367,7 @@ class ReviewApp {
     const d = effective(s.decisions, r);
     const focused = s.focusedId === r.id, expanded = !!s.expanded[r.id];
     const skipped = d.d === 'skip';
+    const held = skipped || d.d === 'defer';
     const effTarget = d.d === 'override' ? d.target : r.target;
     const category = k.category || x.category || '';
     const categoryConflict = g.key === 'needs' && !r.guard.length && /^(security|compliance)$/i.test(category);
@@ -372,7 +375,7 @@ class ReviewApp {
       ? (d.d === 'override' ? 'Override → ' + lbl(d.target) + ' (' + d.target + ')'
         : d.d === 'approve' ? 'Approved ' + lbl(r.current) + ' → ' + lbl(r.target)
           : 'Skipped — stays ' + lbl(r.current) + '; rubric proposed ' + lbl(r.target))
-      : 'Not yet reviewed — exported as skip (stays ' + lbl(r.current) + ')';
+      : 'Not yet reviewed — deferred to the next run (stays ' + lbl(r.current) + ')';
     const opts = [['', '→'], ['error', 'P0'], ['warning', 'P1'], ['recommendation', 'P2']]
       .map(([v, l]) => `<option value="${v}"${(d.d === 'override' ? d.target : '') === v ? ' selected' : ''}>${l}</option>`).join('');
     let panel = '';
@@ -394,7 +397,7 @@ class ReviewApp {
       </div>`;
     }
     return `<div id="row-${r.id}" class="row-wrap${focused ? ' focused' : ''}" data-row="${r.id}">
-      <div class="row${skipped && d.reviewed ? ' skipped' : ''}">
+      <div class="row${skipped ? ' skipped' : ''}">
         <div class="cluster">
           <button class="dbtn approve${d.reviewed && d.d === 'approve' ? ' on' : ''}" data-act="approve" data-row="${r.id}" title="Approve (A)">✓</button>
           <button class="dbtn skip${d.reviewed && d.d === 'skip' ? ' on' : ''}" data-act="skip" data-row="${r.id}" title="Skip (S)">–</button>
@@ -404,9 +407,9 @@ class ReviewApp {
         <div class="name-wrap" data-expand="${r.id}"><span class="name">${esc(r.name)}</span></div>
         ${categoryConflict ? `<span class="cat-chip" title="This rule's Qodo category is Security or Compliance, so the rubric will not lower it without your explicit approval."><span>Category</span>${esc(category)}</span>` : ''}
         <div class="sevs">
-          <span class="chip ${esc(r.current)}${skipped ? '' : ' dim'}" title="Currently ${esc(r.current)}">${lbl(r.current)}</span>
+          <span class="chip ${esc(r.current)}${held ? '' : ' dim'}" title="Currently ${esc(r.current)}">${lbl(r.current)}</span>
           <span class="arrow">→</span>
-          <span class="chip ${esc(effTarget)}${skipped ? ' ghosted' : ''}" title="${skipped ? 'Rubric proposed ' + esc(effTarget) + ' — not applied while skipped' : 'Will become ' + esc(effTarget)}">${lbl(effTarget)}</span>
+          <span class="chip ${esc(effTarget)}${held ? ' ghosted' : ''}" title="${skipped ? 'Rubric proposed ' + esc(effTarget) + ' — not applied while skipped' : d.d === 'defer' ? 'Rubric proposed ' + esc(effTarget) + ' — deferred until you decide' : 'Will become ' + esc(effTarget)}">${lbl(effTarget)}</span>
         </div>
         <button class="row-chev${expanded ? ' open' : ''}" data-expand="${r.id}" title="Expand (E)">▸</button>
       </div>
@@ -508,7 +511,7 @@ class ReviewApp {
       const sel = e.target.closest('[data-override]');
       if (!sel) return;
       const id = +sel.dataset.override, r = s.rows.find((x) => x.id === id), v = sel.value;
-      if (!v) this.decide(id, { d: r.prechecked ? 'approve' : 'skip', target: null });
+      if (!v) this.undecide(id);
       else if (v === r.current) this.decide(id, { d: 'skip', target: null });
       else if (v === r.target) this.decide(id, { d: 'approve', target: null });
       else this.decide(id, { d: 'override', target: v });
@@ -581,7 +584,6 @@ class ReviewApp {
     const s = this.state;
     if (s.impl && !s.impl.done) return;
     const t = tally(s.rows, s.decisions, s.cls);
-    const skipTotal = t.skip + t.undecided;
     const proposal = buildProposal(s.raw, s.rows, s.decisions);
     s.impl = { step: 0, done: false };
     s.hint = '';
@@ -593,8 +595,8 @@ class ReviewApp {
       if (i === 1) this.download('proposal.md', proposal);
       if (i < n) { s.impl = { step: i, done: false }; this.renderSidebar(); setTimeout(tick, 600); return; }
       s.impl = { step: n, done: true };
-      s.hint = 'Saved proposal.md to Downloads — ' + t.approve + ' approve · ' + t.override + ' override · ' + skipTotal + ' skip'
-        + (t.undecided ? ' (' + t.undecided + ' undecided → skip)' : '')
+      s.hint = 'Saved proposal.md to Downloads — ' + t.approve + ' approve · ' + t.override + ' override · ' + t.skip + ' skip'
+        + (t.deferred ? ' · ' + t.deferred + ' deferred to the next run' : '')
         + '. Switch back to your agent: it picks it up, runs the readback, and asks for your final yes before applying.';
       this.renderSidebar();
     };

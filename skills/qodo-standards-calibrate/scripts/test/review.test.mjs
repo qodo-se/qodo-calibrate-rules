@@ -18,18 +18,18 @@ rubric: |
   version: 1
 ---
 
-## Decrease → recommendation · naming (2) — pre-checked; uncheck to skip
+## Decrease → recommendation · naming (2) — pre-checked; uncheck to skip, [?] to defer
 
 - [x] 10 · Use camelCase · warning → recommendation · https://app.qodo.ai/rules/10
 - [x] 11 · Name things · with · dots · warning → recommendation · guard: token, auth · https://app.qodo.ai/rules/11
 
-## Increase → error · security-control (1) — pre-checked; uncheck to skip
+## Increase → error · security-control (1) — pre-checked; uncheck to skip, [?] to defer
 
 - [x] 12 · Parameterize SQL · warning → error · https://app.qodo.ai/rules/12
 
-## Needs a decision — guard or category conflict (1) — check to approve
+## Needs a decision — guard or category conflict (1) — deferred; check to approve, clear to skip
 
-- [ ] 13 · Rotate secrets · error → warning · guard: secret · https://app.qodo.ai/rules/13
+- [?] 13 · Rotate secrets · error → warning · guard: secret · https://app.qodo.ai/rules/13
 
 ---
 Held by prior decision: 0 rules (say "reconsider rule <id>" to release one)
@@ -56,12 +56,14 @@ test('parseProposal reads run id, rows, names with separators, guards, and check
   assert.equal(rows[1].summary, 'with · dots');
   assert.deepEqual(rows[1].guard, ['token', 'auth']);
   assert.equal(rows[3].prechecked, false);
+  assert.equal(rows[3].deferred, true);
+  assert.equal(rows[0].deferred, false);
   assert.equal(rows[3].current, 'error');
   assert.equal(rows[3].target, 'warning');
   assert.equal(rows[0].url, 'https://app.qodo.ai/rules/10');
 });
 
-test('grouping: unchecked or needs_decision → needs; else direction:tag in taxonomy order', () => {
+test('grouping: deferred or needs_decision → needs; else direction:tag in taxonomy order', () => {
   const { rows } = parseProposal(PROPOSAL);
   const cls = parseClassification(CLS);
   const keys = rows.map((r) => groupKey(r, cls[r.id]));
@@ -71,13 +73,13 @@ test('grouping: unchecked or needs_decision → needs; else direction:tag in tax
   assert.equal(groupKey(rows[2], undefined), 'inc:other');
 });
 
-test('buildProposal rewrites only checkbox and target; undecided rows export as skip', () => {
+test('buildProposal rewrites only checkbox and target; undecided rows export as deferred', () => {
   const { rows } = parseProposal(PROPOSAL);
   const decisions = {
     10: { d: 'approve', target: null, reviewed: true },
     11: { d: 'override', target: 'error', reviewed: true },
     13: { d: 'approve', target: null, reviewed: true },
-    // 12 undecided → unchecked
+    // 12 undecided → deferred
   };
   const out = buildProposal(PROPOSAL, rows, decisions);
   const outLines = out.split('\n'), inLines = PROPOSAL.split('\n');
@@ -85,12 +87,12 @@ test('buildProposal rewrites only checkbox and target; undecided rows export as 
   const rowLines = new Set(rows.map((r) => r.line));
   inLines.forEach((l, i) => { if (!rowLines.has(i)) assert.equal(outLines[i], l, `line ${i} changed`); });
 
-  const parsed = outLines.map((l) => LIB_ROW_RE.exec(l)).filter(Boolean).map((m) => ({ checked: m[1] !== ' ', id: +m[2], current: m[4], target: m[5], guard: m[6], url: m[7] }));
+  const parsed = outLines.map((l) => LIB_ROW_RE.exec(l)).filter(Boolean).map((m) => ({ box: m[1], id: +m[2], current: m[4], target: m[5], guard: m[6], url: m[7] }));
   assert.deepEqual(parsed, [
-    { checked: true, id: 10, current: 'warning', target: 'recommendation', guard: undefined, url: 'https://app.qodo.ai/rules/10' },
-    { checked: true, id: 11, current: 'warning', target: 'error', guard: 'token, auth', url: 'https://app.qodo.ai/rules/11' },
-    { checked: false, id: 12, current: 'warning', target: 'error', guard: undefined, url: 'https://app.qodo.ai/rules/12' },
-    { checked: true, id: 13, current: 'error', target: 'warning', guard: 'secret', url: 'https://app.qodo.ai/rules/13' },
+    { box: 'x', id: 10, current: 'warning', target: 'recommendation', guard: undefined, url: 'https://app.qodo.ai/rules/10' },
+    { box: 'x', id: 11, current: 'warning', target: 'error', guard: 'token, auth', url: 'https://app.qodo.ai/rules/11' },
+    { box: '?', id: 12, current: 'warning', target: 'error', guard: undefined, url: 'https://app.qodo.ai/rules/12' },
+    { box: 'x', id: 13, current: 'error', target: 'warning', guard: 'secret', url: 'https://app.qodo.ai/rules/13' },
   ]);
   // The name with separators survived untouched.
   assert.match(out, /- \[x\] 11 · Name things · with · dots · warning → error · guard: token, auth · /);
@@ -107,10 +109,10 @@ test('tally and after-apply projection', () => {
   const cls = parseClassification(CLS);
   const decisions = { 10: { d: 'approve', reviewed: true }, 11: { d: 'override', target: 'error', reviewed: true }, 12: { d: 'skip', reviewed: true } };
   const t = tally(rows, decisions, cls);
-  assert.deepEqual({ ...t, after: undefined }, { approve: 1, skip: 1, override: 1, reviewed: 3, undecided: 1, after: undefined });
+  assert.deepEqual({ ...t, after: undefined }, { approve: 1, skip: 1, override: 1, reviewed: 3, deferred: 1, after: undefined });
   // Start: 4 warning, 1 error. 10 → recommendation, 11 → error.
   assert.deepEqual(t.after, { error: 2, warning: 2, recommendation: 1 });
-  assert.deepEqual(effective(decisions, rows[3]), { d: 'skip', reviewed: false });
+  assert.deepEqual(effective(decisions, rows[3]), { d: 'defer', reviewed: false });
 });
 
 test('parseClassification keeps the last line per rule and skips junk', () => {

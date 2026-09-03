@@ -19,7 +19,7 @@ export const TITLE = '# Qodo Standards Calibration — proposal';
 // Both severities are \S+ on purpose: an edited "critical" target parses and is reported as an
 // invalid override rather than a mangled row, and a rule whose current severity is not one of
 // the three (recorded as needs-a-decision) can still be rendered and decided.
-export const ROW_RE = /^- \[( |x|X)\] (\d+) · (.+) · (\S+) → (\S+)(?: · guard: ([^·]+))? · (\S+)\s*$/;
+export const ROW_RE = /^- \[( |x|X|\?)\] (\d+) · (.+) · (\S+) → (\S+)(?: · guard: ([^·]+))? · (\S+)\s*$/;
 
 export class RunError extends Error {
   constructor(message, code = 2) {
@@ -49,12 +49,12 @@ export function oneLine(value) {
 
 export function renderRow(row) {
   const guard = Array.isArray(row.guard_hits) && row.guard_hits.length ? ` · guard: ${row.guard_hits.join(', ')}` : '';
-  return `- [${row.checked ? 'x' : ' '}] ${row.rule_id} · ${oneLine(row.name)} · ${row.current} → ${row.target}${guard} · ${row.url}`;
+  return `- [${row.checked ? 'x' : row.deferred ? '?' : ' '}] ${row.rule_id} · ${oneLine(row.name)} · ${row.current} → ${row.target}${guard} · ${row.url}`;
 }
 
 // Sections: one per (direction, tag) pair that has rows — decreases first, then increases,
 // taxonomy order within a direction, rows by numeric id — then the needs-a-decision section.
-// Pre-checked and unchecked rows never share a section.
+// Pre-checked and deferred rows never share a section.
 export function buildSections(displayRows) {
   const byId = (a, b) => compareRuleIds(a.rule_id, b.rule_id);
   const sections = [];
@@ -71,10 +71,10 @@ export function buildSections(displayRows) {
 
 export function sectionHeading(section) {
   if (section.kind === 'needs_decision') {
-    return `## Needs a decision — guard or category conflict (${section.rows.length}) — check to approve`;
+    return `## Needs a decision — guard or category conflict (${section.rows.length}) — deferred; check to approve, clear to skip`;
   }
   const label = section.kind === 'decrease' ? 'Decrease' : 'Increase';
-  return `## ${label} → ${section.target} · ${section.tag} (${section.rows.length}) — pre-checked; uncheck to skip`;
+  return `## ${label} → ${section.target} · ${section.tag} (${section.rows.length}) — pre-checked; uncheck to skip, [?] to defer`;
 }
 
 export function heldFooter(heldCount) {
@@ -123,7 +123,8 @@ export function parseRow(line, lineNo = null) {
     line: lineNo,
     raw: line,
     ok: true,
-    checked: m[1] !== ' ',
+    checked: m[1] === 'x' || m[1] === 'X',
+    deferred: m[1] === '?',
     rule_id: Number(m[2]),
     middle: m[3],
     current: m[4],

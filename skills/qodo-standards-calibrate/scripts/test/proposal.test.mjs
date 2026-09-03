@@ -60,15 +60,15 @@ test('render writes only diff and needs-a-decision rows, in section order, and e
   // sections: decreases in taxonomy order, then increases, then needs-a-decision
   const headings = text.split('\n').filter((l) => l.startsWith('## '));
   assert.deepEqual(headings, [
-    '## Decrease → recommendation · documentation (2) — pre-checked; uncheck to skip',
-    '## Decrease → recommendation · naming (1) — pre-checked; uncheck to skip',
-    '## Decrease → recommendation · style-formatting (1) — pre-checked; uncheck to skip',
-    '## Increase → error · secrets-handling (1) — pre-checked; uncheck to skip',
-    '## Needs a decision — guard or category conflict (2) — check to approve',
+    '## Decrease → recommendation · documentation (2) — pre-checked; uncheck to skip, [?] to defer',
+    '## Decrease → recommendation · naming (1) — pre-checked; uncheck to skip, [?] to defer',
+    '## Decrease → recommendation · style-formatting (1) — pre-checked; uncheck to skip, [?] to defer',
+    '## Increase → error · secrets-handling (1) — pre-checked; uncheck to skip, [?] to defer',
+    '## Needs a decision — guard or category conflict (2) — deferred; check to approve, clear to skip',
   ]);
   // rows by numeric id inside a section; unchanged rules never appear
   assert.deepEqual(rows.map((r) => r.rule_id), [99, 101, 102, 103, 104, 105, 106]);
-  for (const id of CALIB_UNCHANGED) assert.ok(!text.includes(`- [x] ${id} ·`) && !text.includes(`- [ ] ${id} ·`), `rule ${id} must not appear`);
+  for (const id of CALIB_UNCHANGED) assert.ok(!text.includes(` ${id} · `), `rule ${id} must not appear`);
   // every row parses back to (id, decision, target)
   for (const row of rows) {
     assert.ok(row.ok, `row ${row.line} parses: ${row.raw}`);
@@ -79,15 +79,16 @@ test('render writes only diff and needs-a-decision rows, in section order, and e
   const nd = rows.filter((r) => CALIB_DECISIONS.includes(r.rule_id));
   assert.deepEqual(nd.map((r) => r.target), ['recommendation', 'recommendation']);
   assert.deepEqual(nd.map((r) => r.checked), [false, false]);
+  assert.deepEqual(nd.map((r) => r.deferred), [true, true]);
   // guard terms are comma-joined; the rule's own url wins over the app.qodo.ai fallback
   assert.match(text, /- \[x\] 104 · Never log session tokens · warning → error · guard: token, secret · https:\/\/portal\.example\.com\/rules\/104$/m);
-  assert.match(text, /- \[ \] 105 · .* · guard: sanctions · https:\/\/app\.qodo\.ai\/rules\/105$/m);
-  assert.match(text, /- \[ \] 106 · .* · warning → recommendation · https:\/\/app\.qodo\.ai\/rules\/106$/m);
+  assert.match(text, /- \[\?\] 105 · .* · guard: sanctions · https:\/\/app\.qodo\.ai\/rules\/105$/m);
+  assert.match(text, /- \[\?\] 106 · .* · warning → recommendation · https:\/\/app\.qodo\.ai\/rules\/106$/m);
   // footer is always rendered
   assert.match(text, /\n---\nHeld by prior decision: 0 rules \(say "reconsider rule <id>" to release one\)\n$/);
 });
 
-test('pre-checked and unchecked rows never share a section', () => {
+test('pre-checked and deferred rows never share a section', () => {
   const ctx = setup();
   assert.equal(render(ctx).status, 0);
   const text = readText(join(ctx.runDir, 'proposal.md'));
@@ -95,12 +96,12 @@ test('pre-checked and unchecked rows never share a section', () => {
   const seen = new Map();
   for (const line of text.split('\n')) {
     if (line.startsWith('## ')) { heading = line; seen.set(heading, new Set()); continue; }
-    const row = /^- \[( |x)\]/.exec(line);
-    if (row && heading) seen.get(heading).add(row[1] === 'x');
+    const row = /^- \[( |x|\?)\]/.exec(line);
+    if (row && heading) seen.get(heading).add(row[1]);
   }
   for (const [head, states] of seen) {
-    assert.equal(states.size, 1, `${head} mixes checked and unchecked rows`);
-    assert.equal([...states][0], head.includes('pre-checked; uncheck to skip'));
+    assert.equal(states.size, 1, `${head} mixes checked and deferred rows`);
+    assert.equal([...states][0], head.startsWith('## Needs a decision') ? '?' : 'x');
   }
 });
 
@@ -137,7 +138,27 @@ test('a prior skip holds the row while the content is unchanged, and shows in th
   const text = readText(join(ctx.runDir, 'proposal.md'));
   assert.ok(!text.includes(' 101 · '));
   assert.match(text, /^Held by prior decision: 1 rules \(say "reconsider rule <id>" to release one\)$/m);
-  assert.match(text, /^## Decrease → recommendation · documentation \(1\) — pre-checked; uncheck to skip$/m);
+  assert.match(text, /^## Decrease → recommendation · documentation \(1\) — pre-checked; uncheck to skip, \[\?\] to defer$/m);
+});
+
+test('a deferred row is recorded nowhere and is proposed again on the next render', () => {
+  const ctx = setup();
+  assert.equal(render(ctx).status, 0);
+  // the admin leaves the needs-a-decision rows as `[?]` and confirms
+  const rb = run(APPROVE, ['--run', ctx.runDir, '--readback'], { env: ctx.env });
+  assert.equal(rb.status, 0, rb.stderr);
+  assert.equal(rb.json.counts.defer, CALIB_DECISIONS.length);
+  const rec = run(APPROVE, ['--run', ctx.runDir, '--record-skips'], { env: ctx.env });
+  assert.equal(rec.status, 0, rec.stderr);
+  assert.deepEqual(rec.json.rule_ids, []);
+  assert.ok(!existsSync(ctx.ledger), 'a defer writes no ledger entry');
+  // so nothing holds them: a second render proposes them again, still deferred
+  const again = render(ctx, ['--replace']);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.json.held_by_prior_decision, 0);
+  assert.equal(again.json.rows, RENDERED.length);
+  const text = readText(join(ctx.runDir, 'proposal.md'));
+  for (const id of CALIB_DECISIONS) assert.match(text, new RegExp(`^- \\[\\?\\] ${id} · `, 'm'));
 });
 
 test('edited content releases a skip; an override behaves like a skip', () => {
@@ -228,7 +249,7 @@ test('rows recorded before rubric_proposed existed take the target from the run 
   assert.deepEqual(nd.map((r) => [r.rule_id, r.current, r.target]), [[105, 'warning', 'recommendation'], [106, 'warning', 'recommendation']]);
   const rb = run(APPROVE, ['--run', ctx.runDir, '--readback'], { env: ctx.env });
   assert.equal(rb.status, 0, rb.stderr);
-  assert.deepEqual(rb.json.counts, { approve: 5, skip: 2, override: 0, invalid: 0, removed: 0 });
+  assert.deepEqual(rb.json.counts, { approve: 5, skip: 0, defer: 2, override: 0, invalid: 0, removed: 0 });
   assert.equal(rb.json.rows.find((r) => r.rule_id === 105).target, 'recommendation');
 });
 

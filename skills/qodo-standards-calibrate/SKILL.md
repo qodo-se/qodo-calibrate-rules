@@ -259,7 +259,7 @@ node <skill-dir>/scripts/proposal.mjs --run <run-dir> --render --workspace-id <w
 
 This writes `<run-dir>/proposal.md`: the diff-only checklist (rule id, name, `current → target`,
 guard terms, portal link) grouped by direction × tag, every
-rubric-proposed row pre-checked, every needs-a-decision row unchecked, the run's rubric snapshot in
+rubric-proposed row pre-checked, every needs-a-decision row deferred (`[?]`), the run's rubric snapshot in
 the frontmatter, and a footer counting the rules held by a prior decision. The grammar, section
 wording, frontmatter, and this phase's error handling are in
 `<skill-dir>/references/proposal-format.md` — read it before you explain the file, and never
@@ -269,8 +269,9 @@ It refuses with exit 2 and writes nothing when the classification is incomplete 
 remaining batches) or `proposal.md` already exists. `--replace` overwrites it — ask the admin first, because their edits
 are discarded.
 
-Then hand the file to the admin: the path, and that a checked row is approved, unchecking skips it,
-editing the value after `→` is an override, and needs-a-decision rows start unchecked because a
+Then hand the file to the admin: the path, and that a checked row is approved, clearing the box
+(`[ ]`) skips it and is remembered, `[?]` defers it to the next run without recording anything,
+editing the value after `→` is an override, and needs-a-decision rows start as `[?]` because a
 guard term or the platform category contradicts the decrease. Offer the browser review page
 (next step) as the alternative to hand-editing. Either way, ask them to say when they are done,
 and do not edit the file for them.
@@ -304,8 +305,8 @@ If they choose the browser:
    applied."*
 
 2. **Wait for the hand-off.** *Commit decisions* downloads one file, `proposal.md`: the input file
-   with each row's checkbox and, for an override, the value after `→` rewritten in the exact row
-   grammar `approve.mjs` reads. It is the admin's decision record; nothing else is produced. Poll
+   with each row's checkbox (`[x]` approve, `[ ]` skip, `[?]` deferred) and, for an override, the
+   value after `→` rewritten in the exact row grammar `approve.mjs` reads. It is the admin's decision record; nothing else is produced. Poll
    the browser's download directory for a `proposal.md` newer than the run's render time
    (`~/Downloads` by default; ask if it is not):
 
@@ -324,8 +325,8 @@ If they choose the browser:
    mv "$HOME/Downloads/proposal.md" "$RUN/proposal.md"
    ```
 
-   Say: *"Got your decisions from the browser (<a> approve · <o> override · <k> skip). Reading them
-   back now."* Then continue to **Approve** exactly as written. The readback is still the gate:
+   Say: *"Got your decisions from the browser (<a> approve · <o> override · <k> skip · <u>
+   deferred). Reading them back now."* Then continue to **Approve** exactly as written. The readback is still the gate:
    the button finalizes the admin's *edits*, it does not authorize the apply.
 
 Guardrails for this step:
@@ -334,8 +335,9 @@ Guardrails for this step:
   readback yes.
 - Never modify `proposal.md` yourself between adopt and readback. If the readback reports `invalid`
   rows, hand them back to the admin (re-open the page, or let them edit the file).
-- Rows the admin left undecided leave the page unchecked, i.e. **skip** — the page says so in its
-  hint; repeat it in the readback summary.
+- Rows the admin left undecided leave the page as `[?]`, i.e. **deferred**: not recorded, proposed
+  again next run. Only an explicit skip is remembered. Repeat the deferred count in the readback
+  summary.
 - If both a browser copy and a hand-edited run-folder copy exist and differ, ask which one wins.
 - Decisions persist in the browser (`localStorage`, keyed by run id), so a refresh does not lose
   work; a new run id starts clean. `review.html` is a snapshot: re-render the proposal and stage
@@ -347,7 +349,8 @@ Guardrails for this step:
 node <skill-dir>/scripts/approve.mjs --run <run-dir> --readback
 ```
 
-The readback prints each row's decision plus `counts`, `invalid`, `removed`, and `readback_text`.
+The readback prints each row's decision (`approve`, `skip`, `defer`, `override`) plus `counts`,
+`invalid`, `removed`, and `readback_text`. Deferred rows are neither applied nor recorded.
 Show `readback_text` verbatim, name every invalid row by line number and reason and say it is
 excluded, mention `removed` rows if any, then ask for explicit confirmation. Nothing is written
 at this point.

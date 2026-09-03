@@ -8,11 +8,12 @@ or read by hand.
 ## Row grammar
 
 ```
-- [x|space] <rule_id> · <name> · <current> → <target> · [guard: <terms> ·] <url>
+- [x|space|?] <rule_id> · <name> · <current> → <target> · [guard: <terms> ·] <url>
 ```
 
 - The fields are separated by ` · ` (space, U+00B7, space). ` → ` separates current from target.
-- `[x]` means approve the row; `[ ]` means skip it. Editing the token after `→` is an override.
+- `[x]` means approve the row; `[ ]` means skip it; `[?]` means defer it — no decision this run,
+  nothing recorded, proposed again next run. Editing the token after `→` is an override.
 - `<target>` is the row's proposed severity: the rubric's severity for the rule's tag. On a
   needs-a-decision row it is `rubric_proposed` — the severity the veto took away — so checking
   the row approves that value.
@@ -20,19 +21,19 @@ or read by hand.
   comma-joined (`guard: auth, personal data`).
 - `<url>` is the rule's `url` from the export, or `https://app.qodo.ai/rules/<ruleId>`.
 
-Parsing is right-anchored: only the checkbox, the rule id, and the target are decisions, and the
+Parsing is right-anchored: only the checkbox state, the rule id, and the target are decisions, and the
 name in the middle is opaque. An edited or odd name never shifts a field.
 
 ## Sections
 
 One section per (direction, tag) pair that has rows — decreases first, then increases, taxonomy
 order within a direction, rows by numeric id — then the needs-a-decision section. Headings are
-fixed, and pre-checked and unchecked rows never share a section:
+fixed, and pre-checked and deferred rows never share a section:
 
 ```
-## Decrease → <target> · <tag> (N) — pre-checked; uncheck to skip
-## Increase → <target> · <tag> (N) — pre-checked; uncheck to skip
-## Needs a decision — guard or category conflict (N) — check to approve
+## Decrease → <target> · <tag> (N) — pre-checked; uncheck to skip, [?] to defer
+## Increase → <target> · <tag> (N) — pre-checked; uncheck to skip, [?] to defer
+## Needs a decision — guard or category conflict (N) — deferred; check to approve, clear to skip
 ```
 
 A rule whose severity the rubric leaves alone never appears: the proposal is a diff. The file
@@ -63,12 +64,15 @@ rubric: |                # the run's rubric snapshot, verbatim
 invalid rows, and this line:
 
 ```
-112 approve · 41 skip · 3 override · 2 invalid override (rows 87, 140: "critical" is not a severity)
+112 approve · 41 skip · 6 deferred · 3 override · 2 invalid override (rows 87, 140: "critical" is not a severity)
 ```
 
 - `[x]` with the rendered target → `approve`; `[x]` with another valid severity → `override`;
-  `[ ]` → `skip`. On an unchecked row the target token is ignored entirely: unchecked is always a
-  skip, however the value was edited.
+  `[ ]` → `skip`; `[?]` → `defer`. On an unchecked or deferred row the target token is ignored
+  entirely, however the value was edited. Needs-a-decision rows render as `[?]`, so a row the admin
+  never touched is deferred, not skipped: a skip is always something the admin did on purpose.
+  Deferred rows are excluded from every ledger write and from `apply.sh`, and the next run
+  proposes them again.
 - Invalid, listed by line number with the reason and excluded from every count of decisions:
   - a target that is not `error`/`warning`/`recommendation`;
   - a target equal to the rule's current severity (a no-op override);
@@ -95,7 +99,8 @@ invalid rows, and this line:
 {"rule_id":815399,"decision":"skip","severity_at_decision":"error","content_hash":"sha256:…","run_id":"20260902-143000","decided_at":"2026-09-02T14:31:02.000Z"}
 ```
 
-- `decision` ∈ `approve | skip | override | released`. The latest entry for a rule wins.
+- `decision` ∈ `approve | skip | override | released`. The latest entry for a rule wins. A
+  deferred row never writes an entry.
 - `content_hash` is `sha256:<hex>` of the rule's raw `content`.
 - `severity_at_decision` is the severity the admin decided on: the target for an approve or
   override, the current severity for a skip.
