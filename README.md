@@ -23,7 +23,8 @@ runtime is too old.
 
 **Admin permission in the Qodo portal.** Severity changes are admin-gated on the platform, so your
 workspace permission must be `owner` or `admin`. The skill checks this up front and stops with a
-plain message for anyone else — a member can review a proposal but cannot apply it.
+plain message for anyone else — it stops before generating a proposal, so a member can review a
+proposal an admin shares with them, but cannot produce or apply one.
 
 **Node.js 20 or newer.** The bundled scripts use Node built-ins only; there is nothing to
 `npm install`.
@@ -48,7 +49,7 @@ and reports anything that didn't.
 
 Runs, the receipt, and your rubric live under `${QODO_HOME:-$HOME/.qodo}/calibrate/` — nothing is
 written into a repository or the skill's install directory. `rubric.yaml` is created on the
-first run and never overwritten; edit it to change a category's default severity or extend the
+first run and never overwritten; edit it to change a taxonomy tag's default severity or extend the
 keyword guard. The taxonomy and defaults are documented in
 [references/rubric.md](skills/qodo-calibrate-rules/references/rubric.md), and the receipt grammar,
 exit codes, and resume rules in
