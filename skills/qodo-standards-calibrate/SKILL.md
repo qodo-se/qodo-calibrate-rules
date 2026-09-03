@@ -4,7 +4,7 @@ description: Calibrate the severity of every active Qodo Review Standards rule a
 owner: Qodo
 metadata:
   vendor: qodo
-  version: "0.6.1"
+  version: "0.6.2"
   recommended: "false"
   package: "qodo-standards"
   distribution: "skills-sh"
@@ -83,7 +83,7 @@ Compare versions as semver: a prerelease `0.1.0-next.N` orders by N numerically 
 
 ```
 qodo --version                                                      # compatibility probe — run this FIRST
-qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.6.1 --distribution skills-sh
+qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.6.2 --distribution skills-sh
 qodo tools --json                                                   # catalog must list rules-update, rules-list, rules-get, rules-metadata
 ls "${QODO_HOME:-$HOME/.qodo}/calibrate/runs/"                                      # an interrupted run to resume?
 RUN="${QODO_HOME:-$HOME/.qodo}/calibrate/runs/$(date -u +%Y%m%d-%H%M%S)"            # new run id (skip when resuming)
@@ -295,8 +295,11 @@ If they choose the browser:
 
    ```
    node <skill-dir>/scripts/stage-review.mjs --run "$RUN"     # writes $RUN/review.html
-   open "$RUN/review.html"                                     # xdg-open on Linux, start on Windows
+   open "$RUN/review.html"                                     # macOS; xdg-open on Linux
    ```
+
+   Windows: `Start-Process "$RUN\review.html"` in PowerShell, `start "" "$RUN/review.html"` in Git
+   Bash, `wslview "$RUN/review.html"` (or `explorer.exe`) in WSL.
 
    The script inlines the page and the run's `proposal.md`, `classification.jsonl`, and
    `export.json` into one self-contained `review.html`, so it opens from the file system: no
@@ -313,23 +316,53 @@ If they choose the browser:
 2. **Wait for the hand-off.** *Commit decisions* downloads one file, `proposal.md`: the input file
    with each row's checkbox (`[x]` approve, `[ ]` skip, `[?]` deferred) and, for an override, the
    value after `→` rewritten in the exact row grammar `approve.mjs` reads. It is the admin's decision record; nothing else is produced. Poll
-   the browser's download directory for a `proposal.md` newer than the run's render time
-   (`~/Downloads` by default; ask if it is not):
+   the browser's download directory for a `proposal*.md` newer than the run's render time. Match
+   the glob, not the bare name: browsers rename a second download to `proposal (1).md` or
+   `proposal(1).md`, and the file is always called `proposal.md`, so the bare name stalls on any
+   repeat. Take the newest match.
+
+   **Resolve the download folder first** — `$HOME/Downloads` is only right on macOS and Linux:
+
+   | Shell | `$DL` |
+   |---|---|
+   | macOS / Linux | `$HOME/Downloads` |
+   | Git Bash | `$USERPROFILE/Downloads` (Git Bash's `$HOME` is not the Windows profile) |
+   | WSL | `$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null \| tr -d '\r')")/Downloads` |
+   | PowerShell | registry value below (honors a relocated Downloads folder) |
+
+   When polling starts, say which folder you are watching and that they can tell you a different
+   path if their browser saves elsewhere. If the folder does not exist, ask instead of waiting.
+
+   POSIX (macOS, Linux, Git Bash, WSL):
 
    ```
    RENDERED=$(stat -f %m "$RUN/proposal.md" 2>/dev/null || stat -c %Y "$RUN/proposal.md")
-   until [ -f "$HOME/Downloads/proposal.md" ] && [ "$(stat -f %m "$HOME/Downloads/proposal.md" 2>/dev/null || stat -c %Y "$HOME/Downloads/proposal.md")" -gt "$RENDERED" ]; do sleep 2; done
+   newest() { ls -t "$DL"/proposal*.md 2>/dev/null | head -1; }
+   until f=$(newest) && [ -n "$f" ] && [ "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f")" -gt "$RENDERED" ]; do sleep 2; done
+   ```
+
+   PowerShell:
+
+   ```powershell
+   $DL = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders').'{374DE290-123F-4565-9164-39C4925E467B}'
+   $DL = [Environment]::ExpandEnvironmentVariables($DL)
+   $rendered = (Get-Item "$RUN\proposal.md").LastWriteTimeUtc
+   do { Start-Sleep 2; $f = Get-ChildItem "$DL\proposal*.md" -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 } until ($f -and $f.LastWriteTimeUtc -gt $rendered)
    ```
 
    Cap the wait (30 minutes) and say you are waiting. If it ends, say so and fall back to "tell me
-   when you are done editing".
+   when you are done editing" or "paste the path of the downloaded file".
 
 3. **Adopt the file.** The browser's copy *is* the admin's edited proposal, so it replaces the
    rendered one:
 
    ```
-   mv "$HOME/Downloads/proposal.md" "$RUN/proposal.md"
+   mv "$f" "$RUN/proposal.md"                       # PowerShell: Move-Item $f.FullName "$RUN\proposal.md" -Force
    ```
+
+   `$f` is the newest match from the poll, whatever the browser named it; it lands in the run
+   folder as `proposal.md`. Delete no other `proposal*.md` in the download folder — an older one
+   may be from a different run.
 
    Say: *"Got your decisions from the browser (<a> approve · <o> override · <k> skip · <u>
    deferred). Reading them back now."* Then continue to **Approve** exactly as written. The readback is still the gate:

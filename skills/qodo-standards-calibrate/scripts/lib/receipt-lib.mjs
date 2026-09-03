@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { parseFrontmatter, parseRow } from './proposal-lib.mjs';
 
-export const SKILL_VERSION = '0.6.1';
+export const SKILL_VERSION = '0.6.2';
 export const RECEIPT_FILE = 'receipt.md';
 export const RESULTS_FILE = 'apply-results.jsonl';
 export const SCRIPT_FILE = 'apply.sh';

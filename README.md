@@ -1,6 +1,6 @@
 # qodo-standards-calibrate
 
-Version 0.6.1 of this coding-agent skill turns a workspace-wide severity review into one
+Version 0.6.2 of this coding-agent skill turns a workspace-wide severity review into one
 reviewable, resumable batch. It checks the CLI version, authentication, workspace admin
 permission, and the tool catalog; creates an editable rubric file on first run; exports every
 active Qodo Review Standards rule into a local run folder; classifies each rule against a fixed
