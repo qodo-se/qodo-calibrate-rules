@@ -77,7 +77,7 @@ test('--generate --revert writes revert.sh for the rows the receipt shows as cha
   const script = readText(ctx.revert);
   const lines = script.split('\n');
   assert.equal(lines[0], '#!/bin/sh');
-  assert.match(lines[1], new RegExp(`^# qodo-standards-calibrate ${SKILL_VERSION} · run ${ctx.runId} · revert · 2 rows · `));
+  assert.match(lines[1], new RegExp(`^# qodo-calibrate-rules ${SKILL_VERSION} · run ${ctx.runId} · revert · 2 rows · `));
   assert.match(lines[2], /One Bash invocation reverts the whole batch: sh revert\.sh/);
   // The loop itself is the apply loop: same row function, same stop codes, no `set -e`.
   assert.ok(!script.includes('set -e'));
@@ -289,7 +289,7 @@ test('verify after a revert expects current and passes', () => {
 });
 
 // ---------------------------------------------------------------------------------------
-// Findings from the story-5 review
+// Findings from the code review of this phase
 
 test('a revert that reverted nothing does not close the run for apply', () => {
   // The abort lands on the first row, so no rule came back to `current` and the receipt still

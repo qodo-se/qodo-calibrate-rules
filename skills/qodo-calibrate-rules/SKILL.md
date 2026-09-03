@@ -1,10 +1,10 @@
 ---
-name: qodo-standards-calibrate
+name: qodo-calibrate-rules
 description: Calibrate the severity of every active Qodo Review Standards rule across the workspace as one reviewable, reversible batch — export the active rules, propose a severity per rule from a fixed rubric, let the workspace admin approve or override each row, then apply only what was approved — using the qodo CLI's managed rules tools. Use on "calibrate our rule severities", "recalibrate review standards", "re-level the rules", "too many rules are errors", "bulk severity review", "which rules should be errors vs warnings"; skip changing one rule's severity or any single-rule edit (use qodo-manage-standards), reading or applying rules while coding (use qodo-get-rules), and anything that isn't workspace-wide severity calibration.
 owner: Qodo
 metadata:
   vendor: qodo
-  version: "0.7.0"
+  version: "0.8.0"
   recommended: "false"
   package: "qodo-standards"
   distribution: "skills-sh"
@@ -83,7 +83,7 @@ Compare versions as semver: a prerelease `0.1.0-next.N` orders by N numerically 
 
 ```
 qodo --version                                                      # compatibility probe — run this FIRST
-qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.7.0 --distribution skills-sh
+qodo read whoami --json --skill qodo-calibrate-rules --skill-version 0.8.0 --distribution skills-sh
 qodo tools --json                                                   # catalog must list rules-update, rules-list, rules-get, rules-metadata
 ls "${QODO_HOME:-$HOME/.qodo}/calibrate/runs/"                                      # an interrupted run to resume?
 RUN="${QODO_HOME:-$HOME/.qodo}/calibrate/runs/$(date -u +%Y%m%d-%H%M%S)"            # new run id (skip when resuming)
@@ -544,7 +544,7 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
 - **Hand-off paths are clickable links.** Every file the admin has to open or find —
   `proposal.md`, `review.html`, `receipt.md`, the run folder, the rubric, the ledger — is
   presented as a markdown link with the **absolute** path resolved (`$HOME` expanded, never `~`,
-  never `$RUN` or `<run-dir>` left literal): `[proposal.md](file:///Users/jk/.qodo/calibrate/runs/20260903-093907/proposal.md)`.
+  never `$RUN` or `<run-dir>` left literal): `[proposal.md](file:///home/user/.qodo/calibrate/runs/20260101-120000/proposal.md)`.
   Terminals and editors render `file://` links as clickable; a tilde path or a bare code span is
   not. Put the plain absolute path in a code block beneath the link only when the admin also
   needs to paste it into a shell.

@@ -11,7 +11,7 @@ import {
 import { tmp } from './helpers.mjs';
 
 const ROW = '- [x] 104 · Never log session tokens · Do not write raw tokens to logs · warning → error · guard: token, secret · https://portal.example.com/rules/104';
-const PLAIN = '- [ ] 105 · Document sanctions-screening functions · Naming the list source · warning → recommendation · guard: sanctions · https://app.qodo.ai/rules/105';
+const PLAIN = '- [ ] 105 · Document encryption-key helpers · Naming the key source · warning → recommendation · guard: encrypt · https://app.qodo.ai/rules/105';
 
 test('splitStatus round-trips a row with a guard list and no token', () => {
   const { row, statuses } = splitStatus(ROW);
@@ -166,7 +166,7 @@ test('renderApplyScript emits the documented shape', () => {
   });
   const lines = script.split('\n');
   assert.equal(lines[0], '#!/bin/sh');
-  assert.equal(lines[1], `# qodo-standards-calibrate ${SKILL_VERSION} · run 20260902-190914 · 2 rows · generated 2026-09-02T20:10:00.000Z · do not edit`);
+  assert.equal(lines[1], `# qodo-calibrate-rules ${SKILL_VERSION} · run 20260902-190914 · 2 rows · generated 2026-09-02T20:10:00.000Z · do not edit`);
   assert.ok(lines.includes('set -u'));
   assert.ok(!script.includes('set -e')); // a failed or deferred row must not stop the loop
   assert.equal(lines[4], 'ABORTED=0');
@@ -274,7 +274,7 @@ test('renderApplyScript in revert mode differs from apply in exactly four places
   const revert = renderApplyScript({ ...common, mode: 'revert' }).split('\n');
   assert.equal(revert.length, apply.length);
   // 1. the header word
-  assert.equal(revert[1], `# qodo-standards-calibrate ${SKILL_VERSION} · run 20260902-190914 · revert · 2 rows · generated 2026-09-02T20:10:00.000Z · do not edit`);
+  assert.equal(revert[1], `# qodo-calibrate-rules ${SKILL_VERSION} · run 20260902-190914 · revert · 2 rows · generated 2026-09-02T20:10:00.000Z · do not edit`);
   assert.equal(revert[2], `# One Bash invocation reverts the whole batch: sh ${REVERT_SCRIPT_FILE}. Never run the rows by hand.`);
   // 2. --revert on the row call — the rest of the row function is byte-identical
   assert.equal(revert[5], apply[5].replace('--target "$2"', '--target "$2" --revert'));

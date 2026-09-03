@@ -28,8 +28,8 @@
 #   severity_overrides:
 #     documentation: warning
 #   guard_terms_extra:
-#     - sanctions
-#     - screening
+#     - billing
+#     - invoice
 
 version: 1
 severity_overrides: {}

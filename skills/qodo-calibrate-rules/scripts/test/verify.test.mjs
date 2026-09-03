@@ -266,7 +266,7 @@ test('apply state is the last apply-class token, and failed(revert:…) still re
 });
 
 // ---------------------------------------------------------------------------------------
-// Findings from the story-5 review
+// Findings from the code review of this phase
 
 test('a present but unusable live severity is mismatch(unknown), and the row still parses', () => {
   const ctx = applied();
@@ -317,7 +317,7 @@ test('a row unchecked in receipt.md after a successful apply is named, not silen
 });
 
 test('the out-of-scope list is capped, but never drops a row the apply changed', () => {
-  // The live qodo-se run has 662 out-of-scope rows: listing them all turned the report the
+  // A real run produced 662 out-of-scope rows: listing them all turned the report the
   // orchestrator reads into 87 KB of JSON. Ordinary rows are capped; a `changed_by_apply` row is
   // the one an admin must not miss, so it is listed however long the list is.
   const ctx = applied();

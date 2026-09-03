@@ -414,7 +414,7 @@ function attemptUpdate(args, runId, ruleId, target, mode = 'apply') {
     return { key, error: { code: 'response_mismatch', message: `rule ${ruleId} came back at severity "${reported}", not "${target}"` }, tail, stderr: res.stderr };
   }
   // No severity anywhere in the response is still a success by the frozen rule, but it is
-  // unconfirmed: the result line says so and verify (story 5) is what settles it.
+  // unconfirmed: the result line says so and verify is what settles it.
   return { key, payload, severityVerified: reported !== null, tail, stderr: res.stderr };
 }
 

@@ -35,13 +35,13 @@ test('default path honours QODO_HOME', () => {
 });
 
 test('override + extra guard terms merge and the snapshot round-trips verbatim', () => {
-  const { dir, path } = rubricAt('version: 1\nseverity_overrides:\n  documentation: warning\nguard_terms_extra:\n  - sanctions\n  - "personal, data"  # comment\n');
+  const { dir, path } = rubricAt('version: 1\nseverity_overrides:\n  documentation: warning\nguard_terms_extra:\n  - billing\n  - "personal, data"  # comment\n');
   const snap = join(dir, 'run', 'rubric-snapshot.yaml');
   const res = run(RUBRIC, ['--rubric', path, '--snapshot', snap]);
   assert.equal(res.status, 0, res.stderr);
   assert.equal(res.json.severities.documentation, 'warning');
   assert.equal(res.json.severities.naming, 'recommendation');
-  assert.deepEqual(res.json.guard_terms.slice(-2), ['sanctions', 'personal, data']);
+  assert.deepEqual(res.json.guard_terms.slice(-2), ['billing', 'personal, data']);
   const back = parseSnapshot(readFileSync(snap, 'utf8'));
   assert.deepEqual(back.severities, res.json.severities);
   assert.deepEqual(back.guard_terms, res.json.guard_terms);
@@ -108,7 +108,7 @@ test('--snapshot refuses to overwrite an existing snapshot unless --replace-snap
 
 test('runs correctly when the skill directory is a symlink (skills.sh layout)', () => {
   const dir = tmp('link-');
-  const link = join(dir, 'skills', 'qodo-standards-calibrate');
+  const link = join(dir, 'skills', 'qodo-calibrate-rules');
   mkdirSync(join(dir, 'skills'));
   symlinkSync(SKILL_DIR, link, 'dir');
   const path = join(dir, 'rubric.yaml');

@@ -1,6 +1,6 @@
-# qodo-standards-calibrate
+# qodo-calibrate-rules
 
-Version 0.7.0 of this coding-agent skill turns a workspace-wide severity review into one
+Version 0.8.0 of this coding-agent skill turns a workspace-wide severity review into one
 reviewable, resumable batch. It checks the CLI version, authentication, workspace admin
 permission, and the tool catalog; creates an editable rubric file on first run; exports every
 active Qodo Review Standards rule into a local run folder; classifies each rule against a fixed
@@ -63,25 +63,25 @@ interrupted run resumes from. Changing a single rule's severity is not this skil
     `decisions.jsonl`. Saying "reconsider rule 815412" releases one so the next proposal includes
     it again.
 
-> **Preview.** This repository is a preview distribution. The skill will move to the official
-> Qodo Standards package (`qodo-standards`) once it is complete; at that point install and update
-> through that package instead of this repository.
+> **Preview.** This skill belongs to the `qodo-standards` family — that is what its
+> `metadata.package` names — but it ships **ahead of** that package and is installed from this
+> repository in the meantime. Once the official Qodo skills distribution carries it, install and
+> update through that instead of here.
 
 ## Install
 
 ```sh
-npx skills add <repo>@<tag> --skill qodo-standards-calibrate
+npx skills add qodo-se/qodo-calibrate-rules@v0.8.0 --skill qodo-calibrate-rules
 ```
 
-Replace `<repo>` with this repository's URL and `<tag>` with the release tag you want. Add
-`--agent <name>` for each local agent and `--global` to install for the user rather than the
+Add `--agent <name>` for each local agent and `--global` to install for the user rather than the
 current project, as with any skills.sh install. The skill lands as
-`skills/qodo-standards-calibrate/SKILL.md` with its `scripts/` and `references/` beside it.
+`skills/qodo-calibrate-rules/SKILL.md` with its `scripts/` and `references/` beside it.
 
 ## Prerequisites
 
-- This skill is installed from its preview repository (skills.sh) and loaded explicitly; it does
-  not require the `qodo-standards` package.
+- This skill ships ahead of the `qodo-standards` package: install it from this repository
+  (skills.sh) and load it explicitly. The package itself is not required.
 - Qodo CLI `0.1.0-next.37` or newer, installed and logged in (`qodo login`). The skill probes
   `qodo --version` first and offers `qodo update` once if the runtime is older.
 - Node.js 20 or newer. The bundled scripts use Node built-ins only — no npm install.
@@ -96,7 +96,7 @@ repository or the skill install directory.
 - `rubric.yaml` — created from defaults on the first run and never overwritten. Edit it to
   override a tag's default severity (`severity_overrides`) or add words to the keyword guard
   (`guard_terms_extra`). The taxonomy, defaults, and guard list are documented in
-  `skills/qodo-standards-calibrate/references/rubric.md`.
+  `skills/qodo-calibrate-rules/references/rubric.md`.
 - `decisions.jsonl` — the decisions ledger: one appended line per decision, with the severity it
   settled on and a hash of the rule's text. Skips are recorded when the admin confirms; approvals
   and overrides are recorded only for rows that actually applied (a failed, deferred, or pending
@@ -118,11 +118,21 @@ repository or the skill install directory.
 
 The receipt grammar, the apply and revert scripts' shape, the failure policy, the exit codes, the
 resume rules, and what verify compares are documented in
-`skills/qodo-standards-calibrate/references/receipt-format.md`.
+`skills/qodo-calibrate-rules/references/receipt-format.md`.
 
 **Windows.** `apply.sh` and `revert.sh` are POSIX `sh`. Run them under **Git Bash** or **WSL**;
 there is no PowerShell equivalent. The rest of the workflow runs in PowerShell, but pass JSON arguments
 through `--tags-file` rather than inline single quotes.
+
+## Changelog
+
+Every release, including the rename, is in [CHANGELOG.md](CHANGELOG.md).
+
+## Maintainer and issues
+
+Maintained by the Qodo team. Please report bugs, unexpected severities, and documentation problems
+as issues **on this repository** — that is where this preview is developed. Once the skill moves to
+the official Qodo skills distribution, issue reporting moves with it.
 
 ## License
 

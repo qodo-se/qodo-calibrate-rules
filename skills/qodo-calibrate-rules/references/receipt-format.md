@@ -16,7 +16,7 @@ the record of what the admin was asked and what they answered.
 ```
 - [x] 815399 · Public functions must have docstrings · Every public function carries a docstring · error → recommendation · https://app.qodo.ai/rules/815399 · applied
 - [x] 815401 · Keep lines under 120 columns · Lines wrap at 120 columns · warning → recommendation · https://app.qodo.ai/rules/815401 · failed(MT-VALIDATION) · applied
-- [ ] 815412 · Document sanctions-screening functions · Sanctions screening helpers name their list source · warning → recommendation · guard: sanctions · https://app.qodo.ai/rules/815412 · skipped
+- [ ] 815412 · Document encryption-key helpers · Encryption key helpers name their key source · warning → recommendation · guard: encrypt · https://app.qodo.ai/rules/815412 · skipped
 ```
 
 Token vocabulary, in the order the workflow can add them:
@@ -73,7 +73,7 @@ Frontmatter is the proposal's, plus these keys as `--write-receipt` stamps them:
 `receipt.md` is rewritten, so a crash between the two loses nothing:
 
 ```json
-{"rule_id":815399,"target":"recommendation","current":"error","status":"applied","code":null,"message":null,"attempt":1,"idempotency_key":"calibrate-20260902-190914-815399","at":"2026-09-02T19:11:04.201Z"}
+{"rule_id":815399,"target":"recommendation","current":"error","status":"applied","code":null,"message":null,"attempt":1,"idempotency_key":"calibrate-20260101-120000-815399","at":"2026-01-01T12:01:04.201Z"}
 ```
 
 `status` ∈ `applied | reverted | verified | mismatch | failed | deferred | aborted | retrying`.
@@ -87,7 +87,7 @@ the phase is what decides how a status is tokenised (a `failed` in the revert ph
 `target`/`current` with `expected` and `actual`:
 
 ```json
-{"rule_id":815399,"phase":"verify","status":"mismatch","apply_status":"applied","expected":"recommendation","actual":"warning","at":"2026-09-03T20:41:02.118Z"}
+{"rule_id":815399,"phase":"verify","status":"mismatch","apply_status":"applied","expected":"recommendation","actual":"warning","at":"2026-01-01T12:41:02.118Z"}
 ```
 
 ## apply.sh
@@ -97,14 +97,14 @@ decision, in file order:
 
 ```sh
 #!/bin/sh
-# qodo-standards-calibrate 0.5.0 · run 20260902-190914 · 5 rows · generated 2026-09-02T20:10:00Z · do not edit
+# qodo-calibrate-rules 0.8.0 · run 20260101-120000 · 5 rows · generated 2026-01-01T12:10:00Z · do not edit
 # One Bash invocation applies the whole batch: sh apply.sh. Never run the rows by hand.
 set -u
 ABORTED=0
-row() { [ "$ABORTED" -eq 1 ] && return 0; "/path/to/node" "/…/scripts/apply.mjs" --run "/…/runs/20260902-190914" --qodo "/…/bin/qodo" --row "$1" --target "$2"; rc=$?; case "$rc" in 30|1|2|126|127) ABORTED=1 ;; *) if [ "$rc" -gt 128 ]; then ABORTED=1; fi ;; esac; return 0; }
-row 815399 recommendation    # qodo rules update --rule-id 815399 --severity recommendation --json --idempotency-key calibrate-20260902-190914-815399
+row() { [ "$ABORTED" -eq 1 ] && return 0; "/path/to/node" "/…/scripts/apply.mjs" --run "/…/runs/20260101-120000" --qodo "/…/bin/qodo" --row "$1" --target "$2"; rc=$?; case "$rc" in 30|1|2|126|127) ABORTED=1 ;; *) if [ "$rc" -gt 128 ]; then ABORTED=1; fi ;; esac; return 0; }
+row 815399 recommendation    # qodo rules update --rule-id 815399 --severity recommendation --json --idempotency-key calibrate-20260101-120000-815399
 …
-exec node "/…/scripts/apply.mjs" --run "/…/runs/20260902-190914" --write-receipt
+exec node "/…/scripts/apply.mjs" --run "/…/runs/20260101-120000" --write-receipt
 ```
 
 - **One invocation.** Run it as `sh "$RUN/apply.sh"` and nothing else. The whole point of the
@@ -153,7 +153,7 @@ Each result line carries `severity_verified`: `true` when the response named the
 for (at the top level or under `rule`, `result`, or `data`, compared case-insensitively), `false`
 when the response carried no severity at all. A row still counts as `applied` in the second case —
 exit 0 with a JSON object and no error is the success rule — but `--row` says so on stderr and
-verify (story 5) is what settles it. A response naming a *different* severity is never applied: it
+verify is what settles it. A response naming a *different* severity is never applied: it
 is `failed(response_mismatch)`.
 
 ## Exit codes

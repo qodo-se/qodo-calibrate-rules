@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { parseFrontmatter, parseRow } from './proposal-lib.mjs';
 
-export const SKILL_VERSION = '0.7.0';
+export const SKILL_VERSION = '0.8.0';
 export const RECEIPT_FILE = 'receipt.md';
 export const RESULTS_FILE = 'apply-results.jsonl';
 export const SCRIPT_FILE = 'apply.sh';
@@ -27,7 +27,7 @@ export const DEFAULT_UPDATE_ARGS = 'rules update';
 // Per-row exit codes are the loop's control channel.
 export const EXIT = Object.freeze({ applied: 0, failed: 10, deferred: 20, abort: 30, usage: 1, refused: 2, report: 3 });
 
-// Every token the receipt can carry, apply and verify/revert alike: a story-5 `· verified` must
+// Every token the receipt can carry, apply and verify/revert alike: a verify-phase `· verified` must
 // still strip cleanly here so the row grammar keeps parsing. The pattern matches the whole
 // trailing run of tokens at once, anchored to end of line, so a mid-row field that reads like a
 // token is never mistaken for one.
@@ -366,7 +366,7 @@ export function renderApplyScript({ runDir, scriptsDir, launcher, updateArgs = D
   const stop = STOP_CODES.join('|');
   const out = [
     '#!/bin/sh',
-    `# qodo-standards-calibrate ${SKILL_VERSION} · run ${runId}${reverting ? ' · revert' : ''} · ${rows.length} row${rows.length === 1 ? '' : 's'} · generated ${now.toISOString()} · do not edit`,
+    `# qodo-calibrate-rules ${SKILL_VERSION} · run ${runId}${reverting ? ' · revert' : ''} · ${rows.length} row${rows.length === 1 ? '' : 's'} · generated ${now.toISOString()} · do not edit`,
     `# One Bash invocation ${reverting ? 'reverts' : 'applies'} the whole batch: sh ${reverting ? REVERT_SCRIPT_FILE : SCRIPT_FILE}. Never run the rows by hand.`,
     'set -u',
     'ABORTED=0',

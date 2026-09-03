@@ -47,7 +47,7 @@ Held by prior decision: N rules (say "reconsider rule <id>" to release one)
 
 ```
 ---
-run_id: 20260902-143000
+run_id: 20260101-120000
 workspace_id: <uuid>
 rule_count: 442          # rules classified in this run
 proposed: 156            # pre-checked rows
@@ -96,7 +96,7 @@ invalid rows, and this line:
 `${QODO_HOME:-$HOME/.qodo}/calibrate/decisions.jsonl`, one object per line, appended:
 
 ```json
-{"rule_id":815399,"decision":"skip","severity_at_decision":"error","content_hash":"sha256:…","run_id":"20260902-143000","decided_at":"2026-09-02T14:31:02.000Z"}
+{"rule_id":815399,"decision":"skip","severity_at_decision":"error","content_hash":"sha256:…","run_id":"20260101-120000","decided_at":"2026-01-01T12:31:02.000Z"}
 ```
 
 - `decision` ∈ `approve | skip | override | released`. The latest entry for a rule wins. A

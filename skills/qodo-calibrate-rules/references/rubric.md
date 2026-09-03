@@ -62,8 +62,8 @@ version: 1
 severity_overrides:       # tag → error|warning|recommendation; omitted tags use defaults
   documentation: warning
 guard_terms_extra:        # appended to the default guard list
-  - sanctions
-  - screening
+  - billing
+  - invoice
 ```
 
 Unknown keys are an error. Tag names outside the taxonomy are an error. The full effective rubric

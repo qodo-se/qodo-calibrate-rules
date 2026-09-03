@@ -82,7 +82,7 @@ test('render writes only diff and needs-a-decision rows, in section order, and e
   assert.deepEqual(nd.map((r) => r.deferred), [true, true]);
   // guard terms are comma-joined; the rule's own url wins over the app.qodo.ai fallback
   assert.match(text, /- \[x\] 104 · Never log session tokens · warning → error · guard: token, secret · https:\/\/portal\.example\.com\/rules\/104$/m);
-  assert.match(text, /- \[\?\] 105 · .* · guard: sanctions · https:\/\/app\.qodo\.ai\/rules\/105$/m);
+  assert.match(text, /- \[\?\] 105 · .* · guard: encrypt · https:\/\/app\.qodo\.ai\/rules\/105$/m);
   assert.match(text, /- \[\?\] 106 · .* · warning → recommendation · https:\/\/app\.qodo\.ai\/rules\/106$/m);
   // footer is always rendered
   assert.match(text, /\n---\nHeld by prior decision: 0 rules \(say "reconsider rule <id>" to release one\)\n$/);

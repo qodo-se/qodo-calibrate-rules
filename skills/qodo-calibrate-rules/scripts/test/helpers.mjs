@@ -155,7 +155,7 @@ export function readWorkspace(ctx) {
   try { return JSON.parse(readFileSync(workspaceFile(ctx), 'utf8')); } catch { return {}; }
 }
 
-// The state story 4 starts from: a rendered proposal, the admin's edits applied, and a readback
+// The state the apply step starts from: a rendered proposal, the admin's edits applied, and a readback
 // that confirms the counts. `edits` is a list of [linePrefix, replacement] pairs where the
 // replacement is a string, a function of the line, or null to delete it — the same editor
 // approve.test.mjs uses. Returns the context plus the readback JSON.
@@ -221,7 +221,7 @@ export const CALIB_RULES = [
   { ruleId: 102, name: 'Modules use snake_case names', category: 'Maintainability', severity: 'error', content: 'Module file names are snake_case.', guard_hits: [] },
   { ruleId: 103, name: 'Keep lines under 120 columns', category: 'Quality', severity: 'warning', content: 'Lines wrap at 120 columns.', guard_hits: [] },
   { ruleId: 104, name: 'Never log session tokens', category: 'Security', severity: 'warning', content: 'Do not write raw session or API tokens to logs.', guard_hits: ['token', 'secret'], url: 'https://portal.example.com/rules/104' },
-  { ruleId: 105, name: 'Document sanctions-screening functions', category: 'Compliance', severity: 'warning', content: 'Sanctions screening helpers carry a docstring naming the list source.', guard_hits: ['sanctions'] },
+  { ruleId: 105, name: 'Document encryption-key helpers', category: 'Compliance', severity: 'warning', content: 'Encryption key helpers carry a docstring naming the key source.', guard_hits: ['encrypt'] },
   { ruleId: 106, name: 'Name security helpers clearly', category: 'Security', severity: 'warning', content: 'Security helpers are named for what they enforce.', guard_hits: [] },
   { ruleId: 107, name: 'Validate request bodies against the schema', category: 'Correctness', severity: 'error', content: 'Every handler validates its request body.', guard_hits: [] },
   { ruleId: 108, name: 'Tests must be deterministic', category: 'Quality', severity: 'warning', content: 'No wall-clock or network dependency in unit tests.', guard_hits: [] },
