@@ -12,11 +12,11 @@ qodo --version
 qodo login
 ```
 
-If the CLI isn't installed, run this in your terminal to install it:
-
-```sh
-curl -fsSL https://get.qodo.ai/install.sh | sh
-```
+If the CLI isn't installed, obtain a versioned, checksum-pinned installer from Qodo or your
+administrator (served from [get.qodo.ai](https://get.qodo.ai)). Verify its published checksum or
+signature before running it; do not pipe a remote installer directly into a shell. For example,
+download the installer and its checksum/signature separately, verify the artifact with the
+publisher's instructions, and only then execute the verified local file.
 
 The skill probes the CLI version before it does anything and offers `qodo update` once if the
 runtime is too old.
@@ -29,8 +29,9 @@ proposal an admin shares with them, but cannot produce or apply one.
 **Node.js 20 or newer.** The bundled scripts use Node built-ins only; there is nothing to
 `npm install`.
 
-**Windows: Git Bash or WSL.** The skill applies its changes by running a generated POSIX `sh`
-script, which PowerShell can't execute. Everything else works in PowerShell.
+**Windows: Git Bash or WSL.** The skill applies and reverts its changes by running generated POSIX
+`sh` scripts (`apply.sh` and `revert.sh`), which PowerShell can't execute. Everything else works
+in PowerShell.
 
 ## Install
 
