@@ -280,7 +280,7 @@ and do not edit the file for them.
 After the render succeeds, offer the review page instead of hand-editing `proposal.md`:
 
 > *"proposal.md is ready at `<run-dir>/proposal.md`. You can edit it directly, or review it in the
-> browser — I'll open a page that lets you approve / skip / override each row and add notes. When
+> browser — I'll open a page that lets you approve / skip / override each row. When
 > you click **Commit decisions**, come back here and I'll continue."*
 
 If they choose the browser:
@@ -309,7 +309,7 @@ If they choose the browser:
 2. **Wait for the hand-off.** *Commit decisions* downloads two files: `proposal.md` — the input
    file with each row's checkbox and, for an override, the value after `→` rewritten in the exact
    row grammar `approve.mjs` reads — and `decisions-<run-id>.json`, every row's decision, target,
-   note, and the finalization timestamp (an audit trail; nothing reads it yet). The browser may ask
+   and the finalization timestamp (an audit trail; nothing reads it yet). The browser may ask
    the admin to allow multiple downloads the first time. Poll the browser's download directory for
    a `proposal.md` newer than the run's render time (`~/Downloads` by default; ask if it is not):
 

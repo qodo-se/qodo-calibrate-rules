@@ -59,12 +59,12 @@ export function indexExport(exported) {
 
 // ---- decisions -----------------------------------------------------------------------------
 
-// A decision is { d: 'approve'|'skip'|'override', target, reviewed, note }. An undecided row is an
+// A decision is { d: 'approve'|'skip'|'override', target, reviewed }. An undecided row is an
 // implicit, unreviewed skip: it leaves the page unchecked.
 export function effective(decisions, row) {
   const d = decisions[row.id];
   if (d && d.d) return d;
-  return { d: 'skip', reviewed: false, note: d && d.note ? d.note : '' };
+  return { d: 'skip', reviewed: false };
 }
 
 export function groupKey(row, k) {
@@ -126,7 +126,6 @@ export function buildDecisionsJson(runId, rows, decisions, cls, now = new Date()
       decision: d.d,
       target: d.d === 'skip' ? r.current : d.d === 'override' ? d.target : r.target,
       reviewed: !!d.reviewed,
-      note: (decisions[r.id] && decisions[r.id].note) || '',
     };
   });
   return JSON.stringify({
@@ -226,7 +225,7 @@ class ReviewApp {
     this.setDecisions((d) => ({ ...d, [id]: { ...(d[id] || {}), ...patch, reviewed: true } }));
   }
   undecide(id) {
-    this.setDecisions((d) => { const n = { ...d }; const note = n[id] && n[id].note; if (note) n[id] = { note }; else delete n[id]; return n; });
+    this.setDecisions((d) => { const n = { ...d }; delete n[id]; return n; });
   }
 
   matches(r, k) {
@@ -318,7 +317,7 @@ class ReviewApp {
     return [
       'Validate ' + (a + o + k) + ' rows · ' + a + ' approve · ' + o + ' override · ' + k + ' skip',
       'Write proposal.md (checked = approve, edited → = override)',
-      'Write decisions.json (notes + audit trail)',
+      'Write decisions.json (audit trail)',
       'Hand off to agent → readback → apply',
     ];
   }
@@ -380,7 +379,6 @@ class ReviewApp {
     const effTarget = d.d === 'override' ? d.target : r.target;
     const category = k.category || x.category || '';
     const categoryConflict = g.key === 'needs' && !r.guard.length && /^(security|compliance)$/i.test(category);
-    const note = (s.decisions[r.id] && s.decisions[r.id].note) || '';
     const decisionLine = d.reviewed
       ? (d.d === 'override' ? 'Override → ' + lbl(d.target) + ' (' + d.target + ')'
         : d.d === 'approve' ? 'Approved ' + lbl(r.current) + ' → ' + lbl(r.target)
@@ -402,7 +400,6 @@ class ReviewApp {
             <span>Source <b class="mono">${esc(x.source || '—')}</b></span>
             <a href="${esc(r.url)}" target="_blank" rel="noopener">Open in Qodo ↗</a>
           </div>
-          <div class="note-wrap"><span class="eyebrow">Note</span><input class="note" type="text" data-note="${r.id}" value="${esc(note)}" placeholder="Optional — saved into decisions.json"></div>
         </div>
         <div class="decision-line">${esc(decisionLine)}</div>
       </div>`;
@@ -528,16 +525,6 @@ class ReviewApp {
       else this.decide(id, { d: 'override', target: v });
       s.focusedId = id;
       this.patchRow(id);
-    });
-
-    main.addEventListener('input', (e) => {
-      const n = e.target.closest('[data-note]');
-      if (!n) return;
-      const id = +n.dataset.note;
-      // Notes are not decisions: no undo entry, no re-render, just persist.
-      const cur = s.decisions[id] || {};
-      s.decisions = { ...s.decisions, [id]: { ...cur, note: n.value } };
-      this.persist();
     });
 
     main.addEventListener('keydown', (e) => this.onKey(e));

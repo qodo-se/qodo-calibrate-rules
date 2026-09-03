@@ -76,7 +76,7 @@ test('buildProposal rewrites only checkbox and target; undecided rows export as 
   const decisions = {
     10: { d: 'approve', target: null, reviewed: true },
     11: { d: 'override', target: 'error', reviewed: true },
-    13: { d: 'approve', target: null, reviewed: true, note: 'ok' },
+    13: { d: 'approve', target: null, reviewed: true },
     // 12 undecided → unchecked
   };
   const out = buildProposal(PROPOSAL, rows, decisions);
@@ -110,21 +110,21 @@ test('tally and after-apply projection', () => {
   assert.deepEqual({ ...t, after: undefined }, { approve: 1, skip: 1, override: 1, reviewed: 3, undecided: 1, after: undefined });
   // Start: 4 warning, 1 error. 10 → recommendation, 11 → error.
   assert.deepEqual(t.after, { error: 2, warning: 2, recommendation: 1 });
-  assert.deepEqual(effective(decisions, rows[3]), { d: 'skip', reviewed: false, note: '' });
+  assert.deepEqual(effective(decisions, rows[3]), { d: 'skip', reviewed: false });
 });
 
-test('decisions json carries every row, counts undecided as skip, and preserves notes', () => {
+test('decisions json carries every row and counts undecided as skip', () => {
   const { rows } = parseProposal(PROPOSAL);
   const cls = parseClassification(CLS);
-  const decisions = { 10: { d: 'approve', reviewed: true, note: 'fine' }, 11: { d: 'override', target: 'error', reviewed: true } };
+  const decisions = { 10: { d: 'approve', reviewed: true }, 11: { d: 'override', target: 'error', reviewed: true } };
   const j = JSON.parse(buildDecisionsJson('20260101-000000', rows, decisions, cls, new Date('2026-01-02T00:00:00Z')));
   assert.equal(j.run_id, '20260101-000000');
   assert.equal(j.finalized_at, '2026-01-02T00:00:00.000Z');
   assert.equal(j.source, 'calibration-review-ui');
   assert.deepEqual(j.counts, { approve: 1, skip: 2, override: 1, reviewed: 2, rows: 4 });
-  assert.deepEqual(j.decisions[0], { rule_id: 10, name: 'Use camelCase', current: 'warning', proposed: 'recommendation', decision: 'approve', target: 'recommendation', reviewed: true, note: 'fine' });
+  assert.deepEqual(j.decisions[0], { rule_id: 10, name: 'Use camelCase', current: 'warning', proposed: 'recommendation', decision: 'approve', target: 'recommendation', reviewed: true });
   assert.deepEqual(j.decisions[1].target, 'error');
-  assert.deepEqual(j.decisions[3], { rule_id: 13, name: 'Rotate secrets', current: 'error', proposed: 'warning', decision: 'skip', target: 'error', reviewed: false, note: '' });
+  assert.deepEqual(j.decisions[3], { rule_id: 13, name: 'Rotate secrets', current: 'error', proposed: 'warning', decision: 'skip', target: 'error', reviewed: false });
 });
 
 test('parseClassification keeps the last line per rule and skips junk', () => {
