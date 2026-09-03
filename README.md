@@ -30,10 +30,10 @@ is not this skill's job — use `qodo-manage-standards` for that.
    proposes start checked; guard or category conflicts start unchecked. Unchanged rules never
    appear, and rules the admin already decided are held out and counted in the footer.
 6. **Approve** — the admin edits the file in any editor (uncheck to skip, edit the value after
-   the arrow to override), or reviews it in the bundled browser page (`review/`, served locally
-   from the run folder; approve / skip / override per row, bulk actions, keyboard flow, guard-term
-   highlighting; *Commit decisions* writes the edited `proposal.md` plus an audit
-   `decisions-<run-id>.json`), and says when they are done. The skill reads it back — counts,
+   the arrow to override), or reviews it in the bundled browser page (`stage-review.mjs` writes a
+   self-contained `review.html` into the run folder; approve / skip / override per row, bulk
+   actions, keyboard flow, guard-term highlighting; *Commit decisions* downloads the edited
+   `proposal.md`), and says when they are done. The skill reads it back — counts,
    invalid values by row, deleted rows — and asks for confirmation before writing anything. The
    rules they unchecked go into the ledger at this point (and again when the loop is generated,
    so a missed step cannot lose them).

@@ -1,9 +1,14 @@
 // review.js — the calibration review page. Vanilla ES module, no build step.
 //
 // The pure half (exported) parses proposal.md / classification.jsonl / export.json and produces
-// the two hand-off files. It mirrors scripts/lib/proposal-lib.mjs: ROW_RE is the same expression,
-// and buildProposal rewrites only the checkbox and the target token of each row, so the output is
+// the hand-off file. It mirrors scripts/lib/proposal-lib.mjs: ROW_RE is the same expression, and
+// buildProposal rewrites only the checkbox and the target token of each row, so the output is
 // exactly what approve.mjs --readback expects. The DOM half at the bottom only runs in a browser.
+//
+// scripts/stage-review.mjs inlines this module and the run's three files into one self-contained
+// review.html (window.__CALIBRATE_DATA__), so the page opens from file:// with no server. When that
+// global is absent the page falls back to fetching ./data/* — handy for developing against a
+// static server, not something the skill uses.
 
 export const ROW_RE = /^- \[( |x|X)\] (\d+) · (.+) · (\S+) → (\S+)(?: · guard: ([^·]+))? · (\S+)\s*$/;
 export const TAX = ['documentation', 'naming', 'style-formatting', 'import-order', 'test-hygiene', 'error-handling', 'logging', 'api-contract', 'architecture', 'correctness-contract', 'security-control', 'data-integrity', 'secrets-handling'];
@@ -114,29 +119,6 @@ export function buildProposal(rawProposal, rows, decisions) {
   return lines.join('\n');
 }
 
-export function buildDecisionsJson(runId, rows, decisions, cls, now = new Date()) {
-  const t = tally(rows, decisions, cls);
-  const list = rows.map((r) => {
-    const d = effective(decisions, r);
-    return {
-      rule_id: r.id,
-      name: r.name,
-      current: r.current,
-      proposed: r.target,
-      decision: d.d,
-      target: d.d === 'skip' ? r.current : d.d === 'override' ? d.target : r.target,
-      reviewed: !!d.reviewed,
-    };
-  });
-  return JSON.stringify({
-    run_id: runId,
-    finalized_at: now.toISOString(),
-    source: 'calibration-review-ui',
-    counts: { approve: t.approve, skip: t.skip + t.undecided, override: t.override, reviewed: t.reviewed, rows: rows.length },
-    decisions: list,
-  }, null, 2);
-}
-
 // Splits rule text into plain / guard-hit segments for <mark> highlighting.
 export function segments(text, guard) {
   if (!text) return [{ text: '(no rule text in export.json)', hit: false }];
@@ -179,11 +161,19 @@ class ReviewApp {
 
   async load() {
     try {
-      const [p, c, e] = await Promise.all([
-        fetch('data/proposal.md').then((r) => { if (!r.ok) throw new Error('data/proposal.md: HTTP ' + r.status); return r.text(); }),
-        fetch('data/classification.jsonl').then((r) => { if (!r.ok) throw new Error('data/classification.jsonl: HTTP ' + r.status); return r.text(); }),
-        fetch('data/export.json').then((r) => (r.ok ? r.json() : { rules: [] })).catch(() => ({ rules: [] })),
-      ]);
+      let p, c, e;
+      const inline = typeof window !== 'undefined' && window.__CALIBRATE_DATA__;
+      if (inline) {
+        p = inline.proposal || '';
+        c = inline.classification || '';
+        e = inline.export || { rules: [] };
+      } else {
+        [p, c, e] = await Promise.all([
+          fetch('data/proposal.md').then((r) => { if (!r.ok) throw new Error('data/proposal.md: HTTP ' + r.status); return r.text(); }),
+          fetch('data/classification.jsonl').then((r) => { if (!r.ok) throw new Error('data/classification.jsonl: HTTP ' + r.status); return r.text(); }),
+          fetch('data/export.json').then((r) => (r.ok ? r.json() : { rules: [] })).catch(() => ({ rules: [] })),
+        ]);
+      }
       const { runId, rows } = parseProposal(p);
       const cls = parseClassification(c);
       const exp = indexExport(e);
@@ -317,7 +307,6 @@ class ReviewApp {
     return [
       'Validate ' + (a + o + k) + ' rows · ' + a + ' approve · ' + o + ' override · ' + k + ' skip',
       'Write proposal.md (checked = approve, edited → = override)',
-      'Write decisions.json (audit trail)',
       'Hand off to agent → readback → apply',
     ];
   }
@@ -333,7 +322,7 @@ class ReviewApp {
 
     const loading = this.$('#loading');
     loading.hidden = !s.loading && !s.error;
-    loading.textContent = s.error ? 'Could not load the run: ' + s.error + ' — serve the review folder over http (see SKILL.md) and reload.' : 'Loading proposal…';
+    loading.textContent = s.error ? 'Could not load the run: ' + s.error + ' — stage the page with stage-review.mjs (see SKILL.md) and reopen it.' : 'Loading proposal…';
     loading.classList.toggle('error', !!s.error);
 
     this.$('#groups').innerHTML = this.buildGroups().map((g) => this.groupHTML(g)).join('');
@@ -594,7 +583,6 @@ class ReviewApp {
     const t = tally(s.rows, s.decisions, s.cls);
     const skipTotal = t.skip + t.undecided;
     const proposal = buildProposal(s.raw, s.rows, s.decisions);
-    const decisions = buildDecisionsJson(s.runId, s.rows, s.decisions, s.cls);
     s.impl = { step: 0, done: false };
     s.hint = '';
     this.renderSidebar();
@@ -603,12 +591,11 @@ class ReviewApp {
     const tick = () => {
       i++;
       if (i === 1) this.download('proposal.md', proposal);
-      if (i === 2) this.download('decisions-' + s.runId + '.json', decisions);
       if (i < n) { s.impl = { step: i, done: false }; this.renderSidebar(); setTimeout(tick, 600); return; }
       s.impl = { step: n, done: true };
-      s.hint = 'Saved proposal.md + decisions-' + s.runId + '.json to Downloads — ' + t.approve + ' approve · ' + t.override + ' override · ' + skipTotal + ' skip'
+      s.hint = 'Saved proposal.md to Downloads — ' + t.approve + ' approve · ' + t.override + ' override · ' + skipTotal + ' skip'
         + (t.undecided ? ' (' + t.undecided + ' undecided → skip)' : '')
-        + '. Switch back to your agent: it picks these up, runs the readback, and asks for your final yes before applying.';
+        + '. Switch back to your agent: it picks it up, runs the readback, and asks for your final yes before applying.';
       this.renderSidebar();
     };
     setTimeout(tick, 600);

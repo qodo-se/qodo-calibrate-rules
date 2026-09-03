@@ -93,7 +93,7 @@ node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --status                 
 #   classifier subagents (references/classifier-prompt.md) each run, per batch:
 node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --batch N --tags-file <path>   # {"<ruleId>":"<tag>", ...}
 node <skill-dir>/scripts/proposal.mjs --run "$RUN" --render --workspace-id <workspace_id>   # writes proposal.md
-#   optional: stage <skill-dir>/review/ into "$RUN/review" and serve it — see Review (optional, browser)
+node <skill-dir>/scripts/stage-review.mjs --run "$RUN"                              # optional: writes review.html; open it in a browser
 node <skill-dir>/scripts/approve.mjs --run "$RUN" --readback                        # counts + invalid rows; writes nothing
 node <skill-dir>/scripts/approve.mjs --run "$RUN" --record-skips                    # only after the admin says yes
 node <skill-dir>/scripts/apply.mjs --run "$RUN" --generate --qodo <launcher>        # writes receipt.md + apply.sh
@@ -280,38 +280,34 @@ and do not edit the file for them.
 After the render succeeds, offer the review page instead of hand-editing `proposal.md`:
 
 > *"proposal.md is ready at `<run-dir>/proposal.md`. You can edit it directly, or review it in the
-> browser — I'll open a page that lets you approve / skip / override each row. When
-> you click **Commit decisions**, come back here and I'll continue."*
+> browser — I'll open a page that lets you approve / skip / override each row. When you click
+> **Commit decisions**, come back here and I'll continue."*
 
 If they choose the browser:
 
-1. **Stage the page.** Copy `<skill-dir>/review/` into the run folder and point it at the run's
-   files. The page fetches `data/proposal.md`, `data/classification.jsonl`, and `data/export.json`
-   relative to itself; browsers block `fetch` on `file://`, so serve the folder read-only for the
-   duration of the review (Node is already a prerequisite):
+1. **Stage and open the page.**
 
    ```
-   mkdir -p "$RUN/review/data"
-   cp -R <skill-dir>/review/. "$RUN/review/"
-   cp "$RUN/proposal.md" "$RUN/export.json" "$RUN/classification.jsonl" "$RUN/review/data/"
-   (cd "$RUN/review" && npx --yes serve -l 4173 -n .) &      # or: python3 -m http.server 4173 --bind 127.0.0.1
-   open http://localhost:4173/                                 # xdg-open on Linux, start on Windows
+   node <skill-dir>/scripts/stage-review.mjs --run "$RUN"     # writes $RUN/review.html
+   open "$RUN/review.html"                                     # xdg-open on Linux, start on Windows
    ```
 
-   Optional query parameters: `?density=comfortable` for taller rows, `?expand=inc,dec` to open
-   the increase and decrease groups on load (needs-a-decision is always open). The server is a
-   static file server only: it executes nothing and accepts no writes. Stop it in step 3.
+   The script inlines the page and the run's `proposal.md`, `classification.jsonl`, and
+   `export.json` into one self-contained `review.html`, so it opens from the file system: no
+   server, no port, nothing to stop. It refuses with exit 2 and writes nothing when a run file is
+   missing. Optional query parameters on the URL: `?density=comfortable` for taller rows,
+   `?expand=inc,dec` to open the increase and decrease groups on load (needs-a-decision is always
+   open). The page never talks to the network beyond loading its two web fonts.
 
    Tell the admin: *"Opened the review page. Approve, skip, or override each row, then click
    Commit decisions — I'm waiting for the file and will read it back to you before anything is
    applied."*
 
-2. **Wait for the hand-off.** *Commit decisions* downloads two files: `proposal.md` — the input
-   file with each row's checkbox and, for an override, the value after `→` rewritten in the exact
-   row grammar `approve.mjs` reads — and `decisions-<run-id>.json`, every row's decision, target,
-   and the finalization timestamp (an audit trail; nothing reads it yet). The browser may ask
-   the admin to allow multiple downloads the first time. Poll the browser's download directory for
-   a `proposal.md` newer than the run's render time (`~/Downloads` by default; ask if it is not):
+2. **Wait for the hand-off.** *Commit decisions* downloads one file, `proposal.md`: the input file
+   with each row's checkbox and, for an override, the value after `→` rewritten in the exact row
+   grammar `approve.mjs` reads. It is the admin's decision record; nothing else is produced. Poll
+   the browser's download directory for a `proposal.md` newer than the run's render time
+   (`~/Downloads` by default; ask if it is not):
 
    ```
    RENDERED=$(stat -f %m "$RUN/proposal.md" 2>/dev/null || stat -c %Y "$RUN/proposal.md")
@@ -321,13 +317,11 @@ If they choose the browser:
    Cap the wait (30 minutes) and say you are waiting. If it ends, say so and fall back to "tell me
    when you are done editing".
 
-3. **Adopt the files.** The browser's copy *is* the admin's edited proposal, so it replaces the
+3. **Adopt the file.** The browser's copy *is* the admin's edited proposal, so it replaces the
    rendered one:
 
    ```
    mv "$HOME/Downloads/proposal.md" "$RUN/proposal.md"
-   mv "$HOME/Downloads/decisions-<run-id>.json" "$RUN/decisions.json" 2>/dev/null || true
-   kill %1   # stop the static server
    ```
 
    Say: *"Got your decisions from the browser (<a> approve · <o> override · <k> skip). Reading them
@@ -336,19 +330,16 @@ If they choose the browser:
 
 Guardrails for this step:
 
-- The page never talks to the Qodo API and the server never accepts writes; the only mutation path
-  is still `apply.sh` after the readback yes.
+- The page never talks to the Qodo API; the only mutation path is still `apply.sh` after the
+  readback yes.
 - Never modify `proposal.md` yourself between adopt and readback. If the readback reports `invalid`
   rows, hand them back to the admin (re-open the page, or let them edit the file).
 - Rows the admin left undecided leave the page unchecked, i.e. **skip** — the page says so in its
   hint; repeat it in the readback summary.
 - If both a browser copy and a hand-edited run-folder copy exist and differ, ask which one wins.
 - Decisions persist in the browser (`localStorage`, keyed by run id), so a refresh does not lose
-  work; a new run id starts clean.
-
-Later upgrade, same contract: swap the static server for a tiny local one exposing
-`POST /finalize` so the files land in `$RUN` directly and the agent gets a signal instead of
-polling Downloads. Nothing about the page's decisions or the readback changes.
+  work; a new run id starts clean. `review.html` is a snapshot: re-render the proposal and stage
+  again if the run files change.
 
 ## Approve
 
@@ -431,7 +422,7 @@ readback, and the apply report:
 # 🛡️ Qodo Review Standards
 
 **Outcome:** Exported <total_rules> active rules and classified all <rows> against the rubric, then proposed <rows-in-proposal> severity changes (<proposed> pre-checked · <needs_decision> needing a decision · <held_by_prior_decision> held by earlier decisions). Readback: <readback_text>. Applied <counts.applied> of <rows_to_apply> approved rows — <counts.failed> failed · <counts.deferred> deferred · <counts.pending> pending · <counts.skipped> skipped · <counts.invalid> invalid. Recorded <recorded> skips and the applied decisions in the ledger. Verification and revert arrive in a later version of this skill.
-**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.jsonl, proposal.md, receipt.md, apply.sh, apply-results.jsonl); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied); ledger ~/.qodo/calibrate/decisions.jsonl
+**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.jsonl, proposal.md, review.html if staged, receipt.md, apply.sh, apply-results.jsonl); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied); ledger ~/.qodo/calibrate/decisions.jsonl
 **State:** permission <organization_permission>; apply exit code <apply_exit_code>; current severities before this run: <current_counts.error> error · <current_counts.warning> warning · <current_counts.recommendation> recommendation
 ---
 ```
@@ -484,8 +475,8 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
   phase before Apply is read-only. Under `${QODO_HOME:-$HOME/.qodo}/calibrate/` it writes
   `rubric.yaml` (first run only), `decisions.jsonl` (the ledger), and `runs/<run-id>/`
   (`export.json`, `batches/` including the classifiers' `*.decisions.json`, `rubric-snapshot.yaml`,
-  `classification.jsonl`, `proposal.md`, `review/` (the staged browser page and its data copies),
-  `decisions.json`, `receipt.md`, `apply.sh`, `apply-results.jsonl`) — plus the CLI's own catalog cache. Write nothing into the skill install
+  `classification.jsonl`, `proposal.md`, `review.html` (the staged browser page), `receipt.md`,
+  `apply.sh`, `apply-results.jsonl`) — plus the CLI's own catalog cache. Write nothing into the skill install
   directory or a repository.
 - **Nothing is written before the admin's explicit yes.** The readback writes nothing, and no
   `apply.sh` is generated or run before the confirmation. Never edit their `proposal.md`,
