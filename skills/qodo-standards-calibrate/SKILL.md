@@ -336,9 +336,9 @@ If they choose the browser:
    POSIX (macOS, Linux, Git Bash, WSL):
 
    ```
-   RENDERED=$(stat -f %m "$RUN/proposal.md" 2>/dev/null || stat -c %Y "$RUN/proposal.md")
-   newest() { ls -t "$DL"/proposal*.md 2>/dev/null | head -1; }
-   until f=$(newest) && [ -n "$f" ] && [ "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f")" -gt "$RENDERED" ]; do sleep 2; done
+   # find, not a glob: zsh aborts an unmatched glob with "no matches found" before ls runs, so 2>/dev/null can't silence it
+   newest() { find "$DL" -maxdepth 1 -name 'proposal*.md' -newer "$RUN/proposal.md" 2>/dev/null | head -1; }
+   until f=$(newest) && [ -n "$f" ]; do sleep 2; done
    ```
 
    PowerShell:
