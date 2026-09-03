@@ -1,7 +1,8 @@
-# Receipt and apply format
+# Receipt, apply, verify and revert format
 
 The receipt is the run's record of what happened to each approved row, and `apply.sh` is the
-loop that produced it. The grammar below is encoded in `scripts/lib/receipt-lib.mjs`; that file
+loop that produced it. `verify.mjs` re-reads the workspace and records what it actually holds;
+`revert.sh` is the same loop run backwards. The grammar below is encoded in `scripts/lib/receipt-lib.mjs`; that file
 is the source of truth and this page is the human-readable copy. The test suite pins the two
 together where drift would be silent: the version stamped into the script header and the
 status-token vocabulary.
@@ -27,7 +28,26 @@ Token vocabulary, in the order the workflow can add them:
 | `· failed(<code>)` | the update did not succeed. For a code the server returned — `MT-VALIDATION`, `MT-NOT-FOUND`, `response_mismatch` — the rule was not changed. For `timeout`, `invalid_json`, `empty_output`, `non_zero_exit`, or `result_too_large` the request may have reached the platform and the **outcome is unknown** until verify re-reads the rule |
 | `· deferred` | rate limited (`MT-RATE-LIMITED`) or the upstream was down (`MT-UPSTREAM-DOWN`) past the retry ceiling; nothing was changed, retry later |
 | `· skipped` | the admin left the row unchecked |
-| `· verified` / `· mismatch(<actual>)` / `· reverted` | written by verify and revert (a later version) |
+| `· verified` | verify re-read the rule and the workspace holds the severity the receipt expects |
+| `· mismatch(<actual>)` | verify re-read the rule and the workspace holds `<actual>` instead — `mismatch(missing)` when the rule is gone from the active set, `mismatch(unknown)` when the platform returned a severity that is blank or carries a character (`)`, ` · `, a newline) that would break the token grammar |
+| `· failed(revert:<code>)` | the **revert** of this row did not take (or was rate limited past the ceiling); the rule is still at the apply target, so the next `--generate --revert` re-sends it. A revert never writes a plain `· deferred`: an exhausted retry folds here, and the revert report counts it as `failed` so the JSON and the receipt agree |
+| `· reverted` | the row was put back at its `current` severity |
+
+### The two token classes
+
+Two classes live on one line. The **apply class** (`applied`, `failed(…)`, `deferred`, `skipped`,
+`reverted`) says what the loop did. The **verify class** (`verified`, `mismatch(…)`) says what the
+workspace held when it was last read. A row's **apply state** is its last apply-class token, with
+`failed(<code>)` collapsed to `failed` and one twist: `failed(revert:<code>)` reads as **applied**,
+because a revert that did not take leaves the rule at the apply target.
+
+```
+· applied                                 → apply applied,  verify none     → expect target
+· applied · verified                      → applied,        verified        → expect target
+· failed(non_zero_exit) · mismatch(error) → failed,         mismatch(error) → expect current; revert candidate
+· applied · failed(revert:MT-VALIDATION)  → applied (still),none            → expect target; revert candidate
+· applied · verified · reverted           → reverted,       stale verify    → expect current
+```
 
 Tokens **accumulate left to right** and the **last one is the effective status**: a row that
 failed and then applied on a resume reads `· failed(MT-VALIDATION) · applied` and counts as
@@ -42,6 +62,10 @@ Frontmatter is the proposal's, plus these keys as `--write-receipt` stamps them:
 |---|---|
 | `applied_at` | ISO time the last apply attempt finished |
 | `apply_exit_code` | `0` when every approved row applied, `3` otherwise |
+| `verified_at` | ISO time of the last verify re-read |
+| `verify_mismatches` | how many compared rows disagreed with the receipt at that read |
+| `reverted_at` | ISO time the last revert attempt finished, written only when at least one row actually reverted. **Its presence closes the run for apply** |
+| `revert_exit_code` | `0` when every revert candidate is `reverted`, `3` otherwise |
 
 ## apply-results.jsonl
 
@@ -52,10 +76,19 @@ Frontmatter is the proposal's, plus these keys as `--write-receipt` stamps them:
 {"rule_id":815399,"target":"recommendation","current":"error","status":"applied","code":null,"message":null,"attempt":1,"idempotency_key":"calibrate-20260902-190914-815399","at":"2026-09-02T19:11:04.201Z"}
 ```
 
-`status` ∈ `applied | failed | deferred | aborted | retrying`. Only the first three become a
-token: an `aborted` row stays pending (the workspace was not touched), and `retrying` is one
-rate-limited attempt inside a row that has not finished yet. Folding takes the **last** result
-per rule, which is what makes a re-fold idempotent.
+`status` ∈ `applied | reverted | verified | mismatch | failed | deferred | aborted | retrying`.
+`aborted` and `retrying` never become a token: an `aborted` row stays pending (the workspace was
+not touched), and `retrying` is one rate-limited attempt inside a row that has not finished yet.
+Folding takes the **last** result per rule, which is what makes a re-fold idempotent.
+
+Every line also carries `phase` ∈ `apply | verify | revert` — the same file records all three, and
+the phase is what decides how a status is tokenised (a `failed` in the revert phase becomes
+`failed(revert:<code>)`, and so does a revert-phase `deferred`). A verify line replaces
+`target`/`current` with `expected` and `actual`:
+
+```json
+{"rule_id":815399,"phase":"verify","status":"mismatch","apply_status":"applied","expected":"recommendation","actual":"warning","at":"2026-09-03T20:41:02.118Z"}
+```
 
 ## apply.sh
 
@@ -209,3 +242,149 @@ the target (not the old value) is what makes the next run hold the row.
   with no error is success) but unconfirmed; say so, and note that verify will settle it.
 - **`response_mismatch`** — the update returned a different severity: the row is not applied, the
   workspace may have been edited concurrently, and retrying is not the answer.
+
+## verify.mjs
+
+```
+node <skill-dir>/scripts/verify.mjs --run <run-dir> --qodo <launcher> [--read-args "read rules list"]
+```
+
+Read-only against the workspace, and the only phase that reads it after apply. It exists because
+the receipt says what the CLI **reported** per row, not what the workspace now holds: a row that
+timed out or printed garbage may well have landed, and an `applied` whose response carried no
+severity (`severity_verified: false`) is only a claim. An `applied` is therefore **never** trusted
+without a re-read.
+
+- **One invocation, no per-rule reads.** Verify pages the whole active set through the same reader
+  the export uses (`scripts/lib/export-lib.mjs`: page size 100, halved on the runtime's truncation
+  marker, one 5 s retry on `MT-RATE-LIMITED`, the same shape checks). It never issues a `rules get`
+  per row — hundreds of calls would be slower, rate-limit itself, and could disagree with an export
+  for no reason but a different reader.
+- **What is compared.** Only the approve/override rows of the readback. `· skipped` rows,
+  `[?]`-deferred rows, and invalid overrides are never read against and gain no token.
+- **What is expected.** Apply state `applied` → the row's **target**. Every other state
+  (`failed(<code>)`, `deferred`, pending, `reverted`) → the row's **current**. A rule absent from
+  the re-read is `mismatch(missing)`.
+- **What is written.** One result line per compared row (`phase: "verify"`, `status`, `expected`,
+  `actual`) appended to `apply-results.jsonl` **first**, then the receipt rewritten from the fold,
+  then `verified_at` and `verify_mismatches` stamped. Verify never writes a severity.
+- **Re-running is safe.** It appends new results and changes a row's token only when the outcome
+  changed, so a second clean verify leaves the receipt's tokens byte-identical.
+
+The report names every mismatch by id, apply state, expected and actual:
+
+```json
+{"status":"mismatched","counts":{"checked":251,"verified":250,"mismatch":1,"active_rules":1505},
+ "mismatches":[{"rule_id":815399,"apply_status":"applied","apply_token":"applied","expected":"recommendation","actual":"warning"}]}
+```
+
+`status` is `verified` when every compared row matched, `mismatched` when any did not, and
+`nothing_to_verify` when **no row was in scope at all** — that last one is not an all-clear and must
+not be reported as "verified 0 of 0".
+
+`out_of_scope` names the rows the readback did not compare, with the reason (`unchecked in the
+checklist`, `deferred with [?]`), the apply state, and `changed_by_apply`. `counts.out_of_scope` is
+the true total: a run where the admin deferred most of the proposal has hundreds, so the list
+carries every `changed_by_apply` row plus ordinary rows up to 50, and `out_of_scope_omitted` counts
+the remainder. A row with
+`changed_by_apply: true` is the case to watch: the apply changed it and the checklist no longer
+approves it, so it is still at the target and no count covers it. Verify also says so on stderr.
+Each mismatch carries `landed_despite_failure`, true only when the apply state is `failed` **and**
+the workspace holds the row's target — the one case where "the write landed anyway" is the right
+thing to say.
+
+Exit `0` when every compared row is `verified` (and for `nothing_to_verify`), `3` when any row
+mismatches (each listed on stderr too), `2` when the receipt is missing, has no frontmatter, or
+names another run; when the re-read reports the same rule id on two pages (the page window moved
+under it, exactly as the export refuses); and when the re-read itself fails. In every exit-2 case
+**nothing** is written to the receipt and no result is recorded.
+
+## revert.sh
+
+```
+node <skill-dir>/scripts/apply.mjs --run <run-dir> --generate --revert --qodo <launcher>
+sh "<run-dir>/revert.sh"
+```
+
+Revert is the apply loop with one column changed: **the target is each row's `current`**. It
+requires `receipt.md` (exit 2 without one — `proposal.md` cannot say what the loop did), folds
+pending results first, and selects the rows the receipt believes are no longer at `current`:
+
+- apply state `applied` — the loop wrote the target (`failed(revert:<code>)` included: the revert
+  did not take, so the rule is still at the target and the row is re-sent), **or**
+- the last verify token is `mismatch(<actual>)` with an `<actual>` that is not `current` (nothing
+  to undo).
+
+Two states are never candidates. A row already `· reverted` is excluded, which is what makes a
+revert resumable. So is a row whose last verify token is `mismatch(missing)`: the rule is gone from
+the active set, so there is nothing to write a severity to and an update would only come back
+not-found. Zero candidates reports `nothing_to_revert` and writes no script.
+
+Selection is on the row's **apply state**, not on its checkbox. An admin who unchecks an already
+`· applied` row in `receipt.md` turns it into a `skip` in the readback, and a decision-keyed
+selection would leave that rule sitting at the apply target while reporting a clean revert. Such a
+row is reverted and listed in `unchecked_but_changed`; every row the revert is *not* touching is
+listed in `not_candidates` with the reason, so nothing is silently absent from the report.
+
+- **The idempotency key is `calibrate-revert-<run-id>-<rule-id>`**, deliberately *not* the apply
+  key: `--idempotency-key` semantics are server-side and unverified, and a server that replayed the
+  cached response for `calibrate-<run-id>-<rule-id>` would answer a revert with the apply's result,
+  making a revert that never happened look like it worked.
+- **The script is the apply script.** `revert.sh` differs from `apply.sh` in four places only: the
+  header word, `--revert` on each row call, `--revert` on the final `--write-receipt`, and the
+  per-row comment's key. The `row` function, `ABORTED`, the stop codes, and the absent `set -e` are
+  byte-identical — and so is the failure policy (abort/retry/fail, backoff, the 120 s timeout, and
+  the response's severity checked against the revert target).
+- **`--row --revert` guards the same way.** The row must be a revert candidate and `--target` must
+  equal the receipt's `current`; either disagreement is a stale script — refused with exit 2, an
+  `aborted`/`stale_script` result line, and nothing written. A row already `reverted` prints
+  `already_reverted` and exits 0.
+- **`--write-receipt --revert`** stamps `revert_exit_code` (and `reverted_at` when a row actually
+  reverted), counts `reverted / failed / deferred / pending / not_candidates` — `deferred` is always
+  0, see the token table — lists every non-reverted candidate by id and code and every
+  non-candidate with its reason, and exits 0 only when every candidate is `reverted`.
+- **No ledger entries.** An `approve` entry holds a rule only while it still sits at the approved
+  severity, so a reverted rule is re-proposed on the next run by the existing hold rule. Writing a
+  revert into the ledger would be a second, redundant record of the same fact.
+- **A reverted run is closed for apply.** Once `reverted_at` is in the frontmatter, `--generate`,
+  `--row` and `--write-receipt` **without** `--revert` refuse (exit 2, "start a new run") — the
+  receipt no longer describes the workspace, so re-running a pre-revert `apply.sh` must not
+  re-stamp `applied_at` or append ledger entries. Verify still works, and expects `current` for the
+  reverted rows.
+- **`reverted_at` is stamped only when a row actually came back.** A revert that aborted on its
+  first row, or that had nothing to do, changed nothing: the receipt still describes the workspace,
+  so the run stays **open** for apply and the report says `closed_for_apply: false`.
+  `revert_exit_code` is stamped either way, so the attempt is on the record. A revert that reverted
+  some rows and then aborted *does* close the run — part of the workspace has been put back, and
+  re-applying the receipt would undo the undo.
+
+## Error handling — verify
+
+- **Mismatches** (`verify.mjs` exit 3) — read `mismatches` from the JSON and name every row by id,
+  apply state, expected and actual. A mismatch on a row the receipt calls `failed` means **the
+  write landed despite the reported failure**: say so plainly, because the admin's mental model is
+  that a failed row changed nothing. A mismatch on an `applied` row means the workspace drifted
+  (someone edited the rule in the portal) or the write never took. Neither is fixed by re-running
+  verify; offer a new run, or a revert.
+- **`mismatch(missing)`** — the rule is no longer in the active set (deleted, or made inactive).
+  Report it as missing; do not try to re-apply or revert it.
+- **Verify refused** (exit 2) — no receipt, a receipt from another run, or the re-read failed
+  (`export-lib`'s message says which page and why). Nothing was written. Fix the cause and run it
+  again; never edit the receipt to make it verify.
+
+## Error handling — revert
+
+- **Nothing to revert** (`nothing_to_revert`, exit 0) — the receipt shows no row believed to be
+  away from `current`. Say nothing was changed back.
+- **Revert refused** (exit 2) — no `receipt.md`; a `run_id` from another run; a row that is not a
+  revert candidate; or a `--target` that is not the receipt's `current` (a stale `revert.sh`:
+  regenerate it and run the new one).
+- **Revert aborted** (`sh revert.sh` exit 3 with `aborted: true`) — an auth, permission, or
+  bad-argument error. Rows before it are back at `current`, that row and every later one are
+  untouched. Fix the cause and regenerate: the reverted rows are not re-sent.
+- **Rows not reverted** (exit 3) — read `non_reverted` and name each row by id and code. Those rows
+  read `· failed(revert:<code>)`, are still at the apply target, and are re-sent by the next
+  `--generate --revert`. A row that fails a second time with the same code is a real rejection:
+  report it and let the admin decide.
+- **Apply refused after a revert** (exit 2, "closed for apply") — expected, not a bug. Start a new
+  run: export, classify, and ask again.

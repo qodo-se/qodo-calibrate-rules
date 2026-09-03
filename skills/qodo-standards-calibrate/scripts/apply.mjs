@@ -2,9 +2,15 @@
 // apply.mjs — apply the confirmed severity decisions, one row at a time, from a generated script.
 //
 // Usage:
-//   node apply.mjs --run <run-dir> --generate --qodo <launcher> [--update-args "rules update"]
-//   node apply.mjs --run <run-dir> --row <rule-id> --target <severity> --qodo <launcher> [--update-args "…"]
-//   node apply.mjs --run <run-dir> --write-receipt
+//   node apply.mjs --run <run-dir> --generate [--revert] --qodo <launcher> [--update-args "rules update"]
+//   node apply.mjs --run <run-dir> --row <rule-id> --target <severity> [--revert] --qodo <launcher> [--update-args "…"]
+//   node apply.mjs --run <run-dir> --write-receipt [--revert]
+//
+// `--revert` runs the same three-step loop backwards: the target column becomes each row's
+// `current` severity, the script is revert.sh, the idempotency key is
+// calibrate-revert-<run-id>-<rule-id>, and no ledger entry is written (an `approve` holds only
+// while the rule sits at the approved severity, so a reverted rule is re-proposed by itself).
+// Once a run has been reverted it is closed for apply: --generate and --row refuse.
 //
 // --generate reads the admin's decisions back (from receipt.md when it exists, otherwise
 // proposal.md), writes <run-dir>/receipt.md, and writes <run-dir>/apply.sh: one `row` line per
@@ -32,9 +38,10 @@ import { appendEntries, contentHash, latestByRule, ledgerPath, makeEntry, readLe
 import { hasContent, RunError } from './lib/proposal-lib.mjs';
 import { readback, recordSkips } from './lib/readback-lib.mjs';
 import {
-  DEFAULT_UPDATE_ARGS, EXIT, RECEIPT_FILE, RESULTS_FILE, SCRIPT_FILE,
-  foldResults, isRowLine, lastResultByRule, markRows, parseReceipt,
-  readResults, renderApplyScript, setFrontmatter, splitStatus, stripStatuses, updateArgv,
+  DEFAULT_UPDATE_ARGS, EXIT, RECEIPT_FILE, RESULTS_FILE, REVERT_SCRIPT_FILE, SCRIPT_FILE,
+  applyPhaseState, applyState, foldResults, isRevertCandidate, isRowLine, lastResultByRule,
+  markRows, parseReceipt, readResults, renderApplyScript, setFrontmatter, splitStatus,
+  stripStatuses, updateArgv,
 } from './lib/receipt-lib.mjs';
 
 requireNode20();
@@ -56,12 +63,12 @@ function fail(code, message) {
   process.exit(code);
 }
 
-const USAGE = `usage: node apply.mjs --run <run-dir> --generate --qodo <launcher> [--update-args "${DEFAULT_UPDATE_ARGS}"]
-       node apply.mjs --run <run-dir> --row <rule-id> --target <severity> --qodo <launcher> [--update-args "…"]
-       node apply.mjs --run <run-dir> --write-receipt\n`;
+const USAGE = `usage: node apply.mjs --run <run-dir> --generate [--revert] --qodo <launcher> [--update-args "${DEFAULT_UPDATE_ARGS}"]
+       node apply.mjs --run <run-dir> --row <rule-id> --target <severity> [--revert] --qodo <launcher> [--update-args "…"]
+       node apply.mjs --run <run-dir> --write-receipt [--revert]\n`;
 
 function parseArgs(argv) {
-  const args = { run: null, generate: false, writeReceipt: false, row: null, target: null, qodo: 'qodo', updateArgs: DEFAULT_UPDATE_ARGS };
+  const args = { run: null, generate: false, writeReceipt: false, row: null, target: null, revert: false, qodo: 'qodo', updateArgs: DEFAULT_UPDATE_ARGS };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => {
@@ -73,6 +80,7 @@ function parseArgs(argv) {
     else if (a === '--write-receipt') args.writeReceipt = true;
     else if (a === '--row') args.row = next();
     else if (a === '--target') args.target = next();
+    else if (a === '--revert') args.revert = true;
     else if (a === '--qodo') args.qodo = next();
     else if (a === '--update-args') args.updateArgs = next();
     else if (a === '-h' || a === '--help') {
@@ -146,6 +154,14 @@ function checkRunId(path, runId) {
 // ---------------------------------------------------------------------------------------
 // --generate
 
+// Once `reverted_at` is stamped, the run's rows are back where they started and its receipt no
+// longer describes the workspace: applying it again would re-write the severities the admin just
+// undid. A new run re-exports, re-classifies, and asks again.
+function refuseClosedRun(frontmatter, runId, what) {
+  if (!frontmatter?.reverted_at) return;
+  fail(EXIT.refused, `run ${runId} was reverted (reverted_at ${frontmatter.reverted_at}) — this run is closed for apply; start a new run. ${what} wrote nothing.`);
+}
+
 function generate(args, runDir, runId) {
   const receiptPath = join(runDir, RECEIPT_FILE);
   const proposalPath = join(runDir, 'proposal.md');
@@ -187,8 +203,10 @@ function generate(args, runDir, runId) {
   const source = resuming ? RECEIPT_FILE : 'proposal.md';
   const result = readbackOr(runDir, { file: source, text: stripStatuses(receiptText) });
   const parsed = parseReceipt(receiptText);
+  refuseClosedRun(parsed.frontmatter, runId, '--generate');
+  // The apply state, not the effective status: a `· applied · verified` row is still applied.
   const statusOf = new Map();
-  for (const row of parsed.rows) if (row.ok) statusOf.set(String(row.rule_id), row.status);
+  for (const row of parsed.rows) if (row.ok) statusOf.set(String(row.rule_id), row.apply_state);
 
   const decisions = result.rows.filter((r) => r.decision === 'approve' || r.decision === 'override');
   const alreadyApplied = decisions.filter((r) => statusOf.get(String(r.rule_id)) === 'applied').map((r) => r.rule_id);
@@ -248,6 +266,110 @@ function generate(args, runDir, runId) {
 }
 
 // ---------------------------------------------------------------------------------------
+// --generate --revert
+
+// Why a row is not in the revert. Plain language, because this lands in the report the agent reads
+// back to the admin.
+function reasonForNonCandidate(state, statuses) {
+  const verify = statuses.find((t) => /^mismatch\(missing\)$/.test(t));
+  if (verify) return 'the rule is gone from the active set';
+  switch (state) {
+    case 'skipped': return 'the admin never approved it, so nothing was written';
+    case 'failed': return 'the apply failed and a verify found the rule still at its current severity';
+    case 'deferred': return 'the apply deferred it, so nothing was written';
+    case 'pending': return 'the apply never reached it';
+    default: return `apply state ${state}`;
+  }
+}
+
+// The revert generator is the apply generator with one column changed: the target is each row's
+// `current`. It reads only receipt.md — proposal.md cannot say what the loop did — and selects the
+// rows the receipt believes are no longer at `current`.
+//
+// Selection is on the row's **apply state**, not on its checkbox. That matters for one nasty case:
+// an admin who unchecks an already-`· applied` row in receipt.md turns it into a `skip` in the
+// readback, and a decision-keyed selection would leave the rule sitting at the apply target while
+// reporting a clean revert. The receipt shows the row as changed, so revert owns it.
+function generateRevert(args, runDir, runId) {
+  const receiptPath = join(runDir, RECEIPT_FILE);
+  const scriptPath = join(runDir, REVERT_SCRIPT_FILE);
+  const resultsPath = join(runDir, RESULTS_FILE);
+
+  if (!existsSync(receiptPath)) {
+    fail(EXIT.refused, `${receiptPath} missing — a revert is generated from the receipt of an apply, and this run has none. Nothing written.`);
+  }
+  let receiptText = checkRunId(receiptPath, runId);
+  const results = readResults(resultsPath);
+  // Pending results first, exactly as apply does: a crash between the results append and the
+  // receipt rewrite must not make a reverted row look like a candidate again.
+  receiptText = foldResults(receiptText, results).text;
+
+  const result = readbackOr(runDir, { file: RECEIPT_FILE, text: stripStatuses(receiptText) });
+  const parsed = parseReceipt(receiptText);
+  const rowOf = new Map();
+  for (const row of parsed.rows) if (row.ok) rowOf.set(String(row.rule_id), row);
+
+  const rows = [];
+  const alreadyReverted = [];
+  const notCandidates = [];
+  const unchecked = [];
+  for (const r of result.rows) {
+    const statuses = rowOf.get(String(r.rule_id))?.statuses ?? [];
+    const state = applyState(statuses);
+    if (state === 'reverted') { alreadyReverted.push(r.rule_id); continue; }
+    if (isRevertCandidate({ statuses, current: r.current })) {
+      rows.push({ rule_id: r.rule_id, target: r.current, apply_state: state });
+      // Worth saying out loud: this row is only in the revert because the receipt says the apply
+      // changed it, even though the checklist no longer approves it.
+      if (r.decision !== 'approve' && r.decision !== 'override') unchecked.push({ rule_id: r.rule_id, decision: r.decision, apply_state: state });
+      continue;
+    }
+    notCandidates.push({ rule_id: r.rule_id, decision: r.decision, apply_state: state, reason: reasonForNonCandidate(state, statuses) });
+  }
+
+  const warnings = unchecked.map((u) => `rule ${u.rule_id} is \`${u.decision}\` in the checklist but \`· ${u.apply_state}\` in the receipt — the apply changed it, so the revert includes it`);
+  for (const w of warnings) process.stderr.write(`apply: ${w}\n`);
+
+  writeAtomic(receiptPath, receiptText);
+
+  const report = {
+    run_dir: runDir,
+    run_id: runId,
+    source: RECEIPT_FILE,
+    receipt: receiptPath,
+    results: resultsPath,
+    rows_to_revert: rows.length,
+    rule_ids: rows.map((r) => r.rule_id),
+    targets: Object.fromEntries(rows.map((r) => [r.rule_id, r.target])),
+    already_reverted: alreadyReverted,
+    // Every row the revert is not touching, by id, with why — so an unchecked-but-applied row can
+    // never be silently absent from the report.
+    not_candidates: notCandidates,
+    unchecked_but_changed: unchecked,
+    invalid: result.invalid,
+    warnings,
+  };
+
+  if (!rows.length) {
+    if (existsSync(scriptPath)) unlinkSync(scriptPath);
+    process.stdout.write(`${JSON.stringify({ ...report, status: 'nothing_to_revert', script: null })}\n`);
+    return;
+  }
+
+  writeAtomic(scriptPath, renderApplyScript({
+    runDir,
+    scriptsDir: SCRIPTS_DIR,
+    launcher: args.qodo,
+    updateArgs: args.updateArgs,
+    runId,
+    rows,
+    mode: 'revert',
+  }));
+  chmodSync(scriptPath, 0o755);
+  process.stdout.write(`${JSON.stringify({ ...report, status: 'generated', script: scriptPath })}\n`);
+}
+
+// ---------------------------------------------------------------------------------------
 // --row
 
 // Where a `rules update` response has been seen to put the updated severity. The frozen success
@@ -266,8 +388,8 @@ function severityIn(payload) {
   return null;
 }
 
-function attemptUpdate(args, runId, ruleId, target) {
-  const argv = updateArgv({ updateArgs: args.updateWords, ruleId, target, runId });
+function attemptUpdate(args, runId, ruleId, target, mode = 'apply') {
+  const argv = updateArgv({ updateArgs: args.updateWords, ruleId, target, runId, mode });
   const res = spawnLauncher(args.qodo, argv, { timeout: ROW_TIMEOUT_MS });
   const key = argv[argv.length - 1];
   if (res.error) {
@@ -297,26 +419,35 @@ function attemptUpdate(args, runId, ruleId, target) {
 }
 
 function applyRow(args, runDir, runId) {
+  const reverting = args.revert;
+  const phase = reverting ? 'revert' : 'apply';
+  const scriptName = reverting ? REVERT_SCRIPT_FILE : SCRIPT_FILE;
   const receiptPath = join(runDir, RECEIPT_FILE);
   const resultsPath = join(runDir, RESULTS_FILE);
-  if (!existsSync(receiptPath)) fail(EXIT.refused, `${receiptPath} missing — run --generate before apply.sh.`);
+  if (!existsSync(receiptPath)) fail(EXIT.refused, `${receiptPath} missing — run --generate before ${scriptName}.`);
   const receiptText = checkRunId(receiptPath, runId);
   if (!isSeverity(args.target)) fail(EXIT.refused, `--target "${args.target}" is not a severity (error|warning|recommendation)`);
 
   const parsed = parseReceipt(receiptText);
+  if (!reverting) refuseClosedRun(parsed.frontmatter, runId, '--row');
   const row = parsed.rows.find((r) => r.ok && String(r.rule_id) === args.row);
-  if (!row) fail(EXIT.refused, `rule ${args.row} has no row in ${receiptPath} — regenerate apply.sh from this run's receipt.`);
-  if (row.status === 'applied') {
+  if (!row) fail(EXIT.refused, `rule ${args.row} has no row in ${receiptPath} — regenerate ${scriptName} from this run's receipt.`);
+  if (!reverting && row.apply_state === 'applied') {
     process.stdout.write(`${JSON.stringify({ rule_id: Number(args.row), status: 'already_applied', target: args.target, receipt: receiptPath })}\n`);
     return EXIT.applied;
   }
+  if (reverting && row.apply_state === 'reverted') {
+    process.stdout.write(`${JSON.stringify({ rule_id: Number(args.row), status: 'already_reverted', target: args.target, receipt: receiptPath })}\n`);
+    return EXIT.applied;
+  }
   // The script is generated from the receipt, so a disagreement means the receipt moved on and
-  // apply.sh did not. Refuse rather than write a severity the receipt does not claim — and record
-  // the refusal as an abort, so the loop's own report names the row it stopped on.
-  const stale = 'apply.sh is stale — regenerate it (apply.mjs --run <run-dir> --generate) and run the new script; nothing written.';
+  // the script did not. Refuse rather than write a severity the receipt does not claim — and
+  // record the refusal as an abort, so the loop's own report names the row it stopped on.
+  const stale = `${scriptName} is stale — regenerate it (apply.mjs --run <run-dir> --generate${reverting ? ' --revert' : ''}) and run the new script; nothing written.`;
   const refuse = (code, why) => {
     appendFileSync(resultsPath, `${JSON.stringify({
       rule_id: Number(args.row),
+      phase,
       target: args.target,
       current: row.current,
       status: 'aborted',
@@ -329,10 +460,20 @@ function applyRow(args, runDir, runId) {
     })}\n`);
     fail(EXIT.refused, `${why} ${stale}`);
   };
-  if (row.status === 'skipped') refuse('stale_script', `rule ${args.row} is already \`· skipped\` in ${receiptPath}.`);
-  if (!row.checked) refuse('stale_script', `rule ${args.row} is not checked in ${receiptPath} — the admin skipped or deferred it.`);
-  if (String(row.target) !== String(args.target)) {
-    refuse('stale_script', `rule ${args.row} reads "${row.target}" in ${receiptPath} but apply.sh asks for "${args.target}".`);
+  if (reverting) {
+    // A revert may only touch a row the receipt shows as changed, and only back to its `current`.
+    if (!isRevertCandidate(row)) {
+      refuse('stale_script', `rule ${args.row} is not a revert candidate in ${receiptPath} (apply state ${row.apply_state}) — the receipt does not show it changed.`);
+    }
+    if (String(row.current) !== String(args.target)) {
+      refuse('stale_script', `rule ${args.row} reverts to "${row.current}" in ${receiptPath} but ${scriptName} asks for "${args.target}".`);
+    }
+  } else {
+    if (row.apply_state === 'skipped') refuse('stale_script', `rule ${args.row} is already \`· skipped\` in ${receiptPath}.`);
+    if (!row.checked) refuse('stale_script', `rule ${args.row} is not checked in ${receiptPath} — the admin skipped or deferred it.`);
+    if (String(row.target) !== String(args.target)) {
+      refuse('stale_script', `rule ${args.row} reads "${row.target}" in ${receiptPath} but ${scriptName} asks for "${args.target}".`);
+    }
   }
 
   const ruleId = Number(args.row);
@@ -341,10 +482,10 @@ function applyRow(args, runDir, runId) {
   let message = null;
   let severityVerified = false;
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
-    const res = attemptUpdate(args, runId, ruleId, args.target);
+    const res = attemptUpdate(args, runId, ruleId, args.target, phase);
     severityVerified = res.severityVerified === true;
     if (!res.error) {
-      status = 'applied';
+      status = reverting ? 'reverted' : 'applied';
       code = null;
       message = null;
       if (!severityVerified) {
@@ -360,6 +501,7 @@ function applyRow(args, runDir, runId) {
     }
     appendFileSync(resultsPath, `${JSON.stringify({
       rule_id: ruleId,
+      phase,
       target: args.target,
       current: row.current,
       status,
@@ -380,13 +522,14 @@ function applyRow(args, runDir, runId) {
   // happens first and a crash here loses nothing.
   writeAtomic(receiptPath, foldResults(receiptText, readResults(resultsPath)).text);
 
-  const exitCode = status === 'applied' ? EXIT.applied
+  const settled = reverting ? 'reverted' : 'applied';
+  const exitCode = status === settled ? EXIT.applied
     : status === 'deferred' ? EXIT.deferred
       : status === 'aborted' ? EXIT.abort : EXIT.failed;
-  if (status !== 'applied') {
+  if (status !== settled) {
     process.stderr.write(`apply: rule ${ruleId} ${status}${code ? ` (${code})` : ''}${status === 'aborted' ? ' — abort class, the loop stops and the remaining rows stay pending' : ''}\n`);
   }
-  process.stdout.write(`${JSON.stringify({ rule_id: ruleId, target: args.target, status, code, receipt: receiptPath, exit_code: exitCode })}\n`);
+  process.stdout.write(`${JSON.stringify({ rule_id: ruleId, phase, target: args.target, status, code, receipt: receiptPath, exit_code: exitCode })}\n`);
   return exitCode;
 }
 
@@ -398,20 +541,23 @@ function writeReceipt(runDir, runId) {
   const resultsPath = join(runDir, RESULTS_FILE);
   if (!existsSync(receiptPath)) fail(EXIT.refused, `${receiptPath} missing — run --generate first.`);
   let receiptText = checkRunId(receiptPath, runId);
+  // A pre-revert apply.sh run again after a revert would re-stamp applied_at / apply_exit_code and
+  // append ledger entries for rows that are no longer at the target. Refuse before writing.
+  refuseClosedRun(parseReceipt(receiptText).frontmatter, runId, '--write-receipt');
   const results = readResults(resultsPath);
   receiptText = foldResults(receiptText, results).text;
 
   const result = readbackOr(runDir, { file: RECEIPT_FILE, text: stripStatuses(receiptText) });
   const parsed = parseReceipt(receiptText);
+  // The apply-phase view of each row: a later verify or revert token must not change what this
+  // loop reports about itself. `applyPhaseState` therefore skips both classes.
   const statusOf = new Map();
-  for (const row of parsed.rows) if (row.ok) statusOf.set(String(row.rule_id), row.status);
-  const lastResult = lastResultByRule(results);
+  for (const row of parsed.rows) if (row.ok) statusOf.set(String(row.rule_id), applyPhaseState(row.statuses));
+  // Apply-phase results only: a verify or revert result must not be read as this loop's outcome.
+  const lastResult = lastResultByRule(results.filter((r) => (r.phase ?? 'apply') === 'apply'));
 
   const applyRows = result.rows.filter((r) => r.decision === 'approve' || r.decision === 'override');
-  const stateOf = (r) => {
-    const s = statusOf.get(String(r.rule_id)) ?? 'pending';
-    return s.startsWith('failed(') ? 'failed' : s;
-  };
+  const stateOf = (r) => statusOf.get(String(r.rule_id)) ?? 'pending';
   const counts = {
     applied: applyRows.filter((r) => stateOf(r) === 'applied').length,
     failed: applyRows.filter((r) => stateOf(r) === 'failed').length,
@@ -429,7 +575,7 @@ function writeReceipt(runDir, runId) {
   // read `· failed(...)` and then hit an auth error on the resume still stopped this loop), and it
   // looks at every row rather than only today's apply rows (a row the admin unchecked after the
   // script was generated aborts on the stale script but is a skip by the time we report).
-  const aborted = parsed.rows.some((r) => r.ok && r.status !== 'applied' && lastResult.get(String(r.rule_id))?.status === 'aborted');
+  const aborted = parsed.rows.some((r) => r.ok && applyPhaseState(r.statuses) !== 'applied' && lastResult.get(String(r.rule_id))?.status === 'aborted');
   const exitCode = nonApplied.length ? EXIT.report : EXIT.applied;
 
   // Only applied rows go in the ledger: a failed, deferred, or pending row was not decided into
@@ -453,7 +599,7 @@ function writeReceipt(runDir, runId) {
   }
   appendEntries(entries, path);
 
-  const times = results.map((r) => r.at).filter(Boolean).sort();
+  const times = results.filter((r) => (r.phase ?? 'apply') === 'apply').map((r) => r.at).filter(Boolean).sort();
   receiptText = setFrontmatter(receiptText, {
     applied_at: times.length ? times[times.length - 1] : new Date().toISOString(),
     apply_exit_code: exitCode,
@@ -485,15 +631,109 @@ function writeReceipt(runDir, runId) {
   return exitCode;
 }
 
+// ---------------------------------------------------------------------------------------
+// --write-receipt --revert
+
+// The same fold and report as apply's, over the revert candidates and with no ledger write: an
+// `approve` entry holds a rule only while it still sits at the approved severity, so a reverted
+// rule is re-proposed by the existing hold rule without anything being recorded here.
+function writeReceiptRevert(runDir, runId) {
+  const receiptPath = join(runDir, RECEIPT_FILE);
+  const resultsPath = join(runDir, RESULTS_FILE);
+  if (!existsSync(receiptPath)) fail(EXIT.refused, `${receiptPath} missing — run --generate --revert first.`);
+  let receiptText = checkRunId(receiptPath, runId);
+  const results = readResults(resultsPath);
+  receiptText = foldResults(receiptText, results).text;
+
+  const result = readbackOr(runDir, { file: RECEIPT_FILE, text: stripStatuses(receiptText) });
+  const parsed = parseReceipt(receiptText);
+  const rowOf = new Map();
+  for (const row of parsed.rows) if (row.ok) rowOf.set(String(row.rule_id), row);
+  const revertResults = results.filter((r) => r.phase === 'revert');
+  const lastRevert = lastResultByRule(revertResults);
+
+  // Every row this revert was responsible for: the ones already back at `current`, plus the ones
+  // still believed to be at the apply target.
+  const scope = [];
+  const notCandidates = [];
+  for (const r of result.rows) {
+    const statuses = rowOf.get(String(r.rule_id))?.statuses ?? [];
+    const state = applyState(statuses);
+    if (state === 'reverted') { scope.push({ rule_id: r.rule_id, state: 'reverted' }); continue; }
+    if (!isRevertCandidate({ statuses, current: r.current })) {
+      notCandidates.push({ rule_id: r.rule_id, decision: r.decision, apply_state: state, reason: reasonForNonCandidate(state, statuses) });
+      continue;
+    }
+    const last = lastRevert.get(String(r.rule_id));
+    // Both a revert-phase `failed` and an exhausted rate limit fold to one token,
+    // `failed(revert:<code>)`, so both must count as `failed` here — otherwise the JSON and the
+    // receipt would describe the same row two different ways. An `aborted` row was never sent, so
+    // it is pending, not failed.
+    const state_ = last?.status === 'failed' || last?.status === 'deferred' ? 'failed' : 'pending';
+    scope.push({ rule_id: r.rule_id, state: state_ });
+  }
+
+  const counts = {
+    reverted: scope.filter((r) => r.state === 'reverted').length,
+    failed: scope.filter((r) => r.state === 'failed').length,
+    // Kept for shape stability and always 0: a revert never writes a `· deferred` token, because
+    // an exhausted retry folds to `failed(revert:MT-RATE-LIMITED)` and is counted as failed.
+    deferred: 0,
+    pending: scope.filter((r) => r.state === 'pending').length,
+    not_candidates: notCandidates.length,
+  };
+  const nonReverted = scope
+    .filter((r) => r.state !== 'reverted')
+    .map((r) => ({ rule_id: r.rule_id, status: r.state, code: lastRevert.get(String(r.rule_id))?.code ?? null }));
+  const aborted = scope.some((r) => r.state !== 'reverted' && lastRevert.get(String(r.rule_id))?.status === 'aborted');
+  const exitCode = nonReverted.length ? EXIT.report : EXIT.applied;
+
+  // `reverted_at` is what closes the run for apply, so it is stamped only when at least one row
+  // actually came back to `current`. A revert that aborted on its first row, or that found nothing
+  // to do, changed nothing — closing the run for apply would strand the admin with a receipt they
+  // can neither finish applying nor revert. `revert_exit_code` is stamped either way, so the
+  // attempt is still on the record.
+  const times = revertResults.map((r) => r.at).filter(Boolean).sort();
+  receiptText = setFrontmatter(receiptText, {
+    reverted_at: counts.reverted > 0 ? (times.length ? times[times.length - 1] : new Date().toISOString()) : undefined,
+    revert_exit_code: exitCode,
+  });
+  writeAtomic(receiptPath, receiptText);
+
+  if (nonReverted.length) {
+    process.stderr.write(`apply: ${nonReverted.length} row${nonReverted.length === 1 ? '' : 's'} not reverted: ${nonReverted.map((r) => `${r.rule_id} ${r.status}${r.code ? `(${r.code})` : ''}`).join(', ')}\n`);
+  }
+  process.stdout.write(`${JSON.stringify({
+    run_dir: runDir,
+    run_id: runId,
+    phase: 'revert',
+    status: nonReverted.length ? 'incomplete' : 'reverted',
+    counts,
+    non_reverted: nonReverted,
+    not_candidates: notCandidates,
+    closed_for_apply: counts.reverted > 0,
+    invalid: result.invalid,
+    aborted,
+    receipt: receiptPath,
+    results: resultsPath,
+    // A revert writes no ledger entry: a reverted rule is re-proposed by the hold rule itself.
+    ledger_recorded: 0,
+    exit_code: exitCode,
+  })}\n`);
+  return exitCode;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const runDir = resolve(args.run);
   const runId = basename(runDir);
   if (args.generate) {
-    generate(args, runDir, runId);
+    if (args.revert) generateRevert(args, runDir, runId);
+    else generate(args, runDir, runId);
     return;
   }
-  process.exit(args.row !== null ? applyRow(args, runDir, runId) : writeReceipt(runDir, runId));
+  if (args.row !== null) process.exit(applyRow(args, runDir, runId));
+  process.exit(args.revert ? writeReceiptRevert(runDir, runId) : writeReceipt(runDir, runId));
 }
 
 main();

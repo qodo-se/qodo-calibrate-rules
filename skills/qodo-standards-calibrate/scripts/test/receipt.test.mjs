@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseRow } from '../lib/proposal-lib.mjs';
 import {
-  DEFAULT_UPDATE_ARGS, EXIT, SKILL_VERSION, STOP_CODES,
+  DEFAULT_UPDATE_ARGS, EXIT, REVERT_SCRIPT_FILE, SKILL_VERSION, STOP_CODES, applyPhaseState, applyState,
   effectiveStatus, foldResults, idempotencyKey, markRows, parseReceipt, readResults,
   renderApplyScript, setFrontmatter, shq, splitStatus, statusToken, stripStatuses, updateArgv,
 } from '../lib/receipt-lib.mjs';
@@ -253,5 +253,94 @@ test('a CRLF receipt folds, marks, and parses without stray carriage returns', (
   for (const line of stripStatuses(marked.text).split(/\r?\n/).filter((l) => l.startsWith('- ['))) {
     assert.equal(parseRow(line).ok, true, line);
     assert.ok(!line.includes('\r'));
+  }
+});
+
+// ---------------------------------------------------------------------------------------
+// The revert script
+
+test('renderApplyScript in revert mode differs from apply in exactly four places', () => {
+  const rows = [{ rule_id: 99, target: 'error' }, { rule_id: 104, target: 'warning' }];
+  const common = {
+    runDir: '/runs/20260902-190914',
+    scriptsDir: '/skill/scripts',
+    launcher: '/bin/qodo',
+    runId: '20260902-190914',
+    rows,
+    node: '/opt/node/bin/node',
+    now: new Date('2026-09-02T20:10:00Z'),
+  };
+  const apply = renderApplyScript(common).split('\n');
+  const revert = renderApplyScript({ ...common, mode: 'revert' }).split('\n');
+  assert.equal(revert.length, apply.length);
+  // 1. the header word
+  assert.equal(revert[1], `# qodo-standards-calibrate ${SKILL_VERSION} · run 20260902-190914 · revert · 2 rows · generated 2026-09-02T20:10:00.000Z · do not edit`);
+  assert.equal(revert[2], `# One Bash invocation reverts the whole batch: sh ${REVERT_SCRIPT_FILE}. Never run the rows by hand.`);
+  // 2. --revert on the row call — the rest of the row function is byte-identical
+  assert.equal(revert[5], apply[5].replace('--target "$2"', '--target "$2" --revert'));
+  // 3. the per-row comment's key, and 4. --revert on the final --write-receipt
+  assert.equal(revert[6], 'row 99 error    # qodo rules update --rule-id 99 --severity error --json --idempotency-key calibrate-revert-20260902-190914-99');
+  assert.equal(revert[7], 'row 104 warning    # qodo rules update --rule-id 104 --severity warning --json --idempotency-key calibrate-revert-20260902-190914-104');
+  assert.equal(revert[8], `${apply[8]} --revert`);
+  // Everything else is the same script: same shebang, same set -u, same ABORTED, no set -e.
+  for (const i of [0, 3, 4]) assert.equal(revert[i], apply[i]);
+  assert.ok(!revert.join('\n').includes('set -e'));
+});
+
+test('the revert idempotency key is never the apply key', () => {
+  // A server that replayed the cached response for the apply key would answer a revert with the
+  // apply's result, and the revert would look like it had worked.
+  assert.equal(idempotencyKey('20260902-190914', 104, 'revert'), 'calibrate-revert-20260902-190914-104');
+  assert.equal(idempotencyKey('20260902-190914', 104, 'apply'), 'calibrate-20260902-190914-104');
+  assert.equal(idempotencyKey('20260902-190914', 104), 'calibrate-20260902-190914-104');
+  assert.deepEqual(updateArgv({ updateArgs: ['rules', 'update'], ruleId: 104, target: 'warning', runId: 'r1', mode: 'revert' }), [
+    'rules', 'update', '--rule-id', '104', '--severity', 'warning', '--json', '--idempotency-key', 'calibrate-revert-r1-104',
+  ]);
+});
+
+test('statusToken tokenises the verify and revert result statuses', () => {
+  assert.equal(statusToken({ status: 'verified' }), 'verified');
+  assert.equal(statusToken({ status: 'mismatch', actual: 'warning' }), 'mismatch(warning)');
+  // An actual that is absent, blank, or carries a character that would break the token grammar
+  // becomes `unknown`: the row still says the workspace disagreed, and it still parses.
+  assert.equal(statusToken({ status: 'mismatch' }), 'mismatch(unknown)');
+  assert.equal(statusToken({ status: 'mismatch', actual: '' }), 'mismatch(unknown)');
+  assert.equal(statusToken({ status: 'mismatch', actual: null }), 'mismatch(unknown)');
+  assert.equal(statusToken({ status: 'mismatch', actual: 'weird)severity' }), 'mismatch(unknown)');
+  assert.equal(statusToken({ status: 'mismatch', actual: 'a · b' }), 'mismatch(unknown)');
+  assert.equal(statusToken({ status: 'mismatch', actual: 'two\nlines' }), 'mismatch(unknown)');
+  // A token built from any of those still strips cleanly, which is the property that matters.
+  for (const actual of ['warning', '', 'weird)severity', 'a · b']) {
+    const token = statusToken({ status: 'mismatch', actual });
+    assert.equal(splitStatus(`- [x] 1 · n · s · warning → error · https://x/1 · ${token}`).statuses.length, 1, `strips ${token}`);
+  }
+  assert.equal(statusToken({ status: 'reverted' }), 'reverted');
+  // A revert-phase failure or exhausted retry stays inside the failed(…) grammar and keeps the
+  // apply state `applied`, so the next --generate --revert picks the row up again.
+  assert.equal(statusToken({ status: 'failed', code: 'MT-VALIDATION', phase: 'revert' }), 'failed(revert:MT-VALIDATION)');
+  assert.equal(statusToken({ status: 'deferred', code: 'MT-RATE-LIMITED', phase: 'revert' }), 'failed(revert:MT-RATE-LIMITED)');
+  assert.equal(statusToken({ status: 'failed', code: 'MT-VALIDATION', phase: 'apply' }), 'failed(MT-VALIDATION)');
+  assert.equal(statusToken({ status: 'deferred', phase: 'apply' }), 'deferred');
+  assert.equal(statusToken({ status: 'aborted' }), null);
+});
+
+test('the apply-phase view and the "where is the rule now" view are separate', () => {
+  // applyState answers "where is the rule now?" — a revert token is the latest word on that.
+  // applyPhaseState answers "what did the apply loop do?" — it must ignore both later classes, so
+  // the apply report never counts a row as not-applied because a *revert* touched it afterwards.
+  const cases = [
+    [['applied'], 'applied', 'applied'],
+    [['applied', 'verified'], 'applied', 'applied'],
+    [['applied', 'failed(revert:MT-VALIDATION)'], 'applied', 'applied'],
+    [['applied', 'verified', 'reverted'], 'reverted', 'applied'],
+    [['failed(MT-VALIDATION)'], 'failed', 'failed'],
+    [['failed(non_zero_exit)', 'mismatch(error)'], 'failed', 'failed'],
+    [['skipped'], 'skipped', 'skipped'],
+    [['deferred'], 'deferred', 'deferred'],
+    [[], 'pending', 'pending'],
+  ];
+  for (const [statuses, now, duringApply] of cases) {
+    assert.equal(applyState(statuses), now, `applyState ${statuses.join(' · ')}`);
+    assert.equal(applyPhaseState(statuses), duringApply, `applyPhaseState ${statuses.join(' · ')}`);
   }
 });

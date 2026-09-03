@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseReceipt } from '../lib/receipt-lib.mjs';
+import { parseReceipt, REVERT_SCRIPT_FILE } from '../lib/receipt-lib.mjs';
 import { readClassification, readClassificationLines } from '../lib/proposal-lib.mjs';
 
 export const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -17,6 +17,7 @@ export const PROPOSAL = join(SCRIPTS_DIR, 'proposal.mjs');
 export const APPROVE = join(SCRIPTS_DIR, 'approve.mjs');
 export const LEDGER = join(SCRIPTS_DIR, 'ledger.mjs');
 export const APPLY = join(SCRIPTS_DIR, 'apply.mjs');
+export const VERIFY = join(SCRIPTS_DIR, 'verify.mjs');
 
 export function tmp(prefix = 'calibrate-test-') {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -127,6 +128,33 @@ export function receiptStatuses(runDir) {
   return rows.map((r) => [r.rule_id, r.status]);
 }
 
+// The same rows as [ruleId, applyState] pairs: what the loop did, with the verify-class tokens
+// (`verified`, `mismatch(…)`) skipped and `failed(revert:…)` reading as `applied`.
+export function receiptApplyStates(runDir) {
+  const rows = parseReceipt(readText(join(runDir, 'receipt.md'))).rows;
+  return rows.map((r) => [r.rule_id, r.apply_state]);
+}
+
+// The receipt's frontmatter as a flat object.
+export function receiptFrontmatter(runDir) {
+  return parseReceipt(readText(join(runDir, 'receipt.md'))).frontmatter;
+}
+
+// The fake launcher's stand-in workspace file for this run: {ruleId: severity}, written by the
+// fake's `rules update` branch and overlaid by its `rules list` branch.
+export function workspaceFile(ctx) {
+  return join(ctx.runDir, 'fake-workspace.json');
+}
+
+export function seedWorkspace(ctx, severities) {
+  writeFileSync(workspaceFile(ctx), JSON.stringify(Object.fromEntries(Object.entries(severities).map(([k, v]) => [String(k), v]))));
+  return workspaceFile(ctx);
+}
+
+export function readWorkspace(ctx) {
+  try { return JSON.parse(readFileSync(workspaceFile(ctx), 'utf8')); } catch { return {}; }
+}
+
 // The state story 4 starts from: a rendered proposal, the admin's edits applied, and a readback
 // that confirms the counts. `edits` is a list of [linePrefix, replacement] pairs where the
 // replacement is a string, a function of the line, or null to delete it — the same editor
@@ -138,6 +166,7 @@ export function confirmed({ edits = [], rules = CALIB_RULES, tags = CALIB_TAGS, 
   ctx.proposal = join(ctx.runDir, 'proposal.md');
   ctx.receipt = join(ctx.runDir, 'receipt.md');
   ctx.script = join(ctx.runDir, 'apply.sh');
+  ctx.revert = join(ctx.runDir, REVERT_SCRIPT_FILE);
   if (edits.length) {
     const text = readText(ctx.proposal).split('\n').flatMap((line) => {
       for (const [match, replace] of edits) {
@@ -159,6 +188,17 @@ export function confirmed({ edits = [], rules = CALIB_RULES, tags = CALIB_TAGS, 
 // Runs the generated apply.sh in one shell invocation, the way the skill does.
 export function runScript(ctx, env = {}) {
   const res = spawnSync('sh', [ctx.script], {
+    encoding: 'utf8',
+    env: { ...process.env, ...ctx.env, ...env },
+  });
+  let json = null;
+  try { json = JSON.parse(res.stdout.trim().split('\n').pop()); } catch { /* not JSON */ }
+  return { status: res.status, stdout: res.stdout, stderr: res.stderr, json };
+}
+
+// Runs the generated revert.sh in one shell invocation, the way the skill does.
+export function revertScript(ctx, env = {}) {
+  const res = spawnSync('sh', [join(ctx.runDir, REVERT_SCRIPT_FILE)], {
     encoding: 'utf8',
     env: { ...process.env, ...ctx.env, ...env },
   });

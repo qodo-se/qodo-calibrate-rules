@@ -141,3 +141,37 @@ is present, so an older run folder resumes.
   belongs to another run. Point at the right run folder; never edit the frontmatter to match.
 - **Invalid or removed rows in the readback** (exit 0) — not a failure: report them by line number
   with the reason, say they are excluded, and let the admin fix the file and read it back again.
+
+## Browser hand-off — resolving the download folder
+
+*Commit decisions* on `review.html` downloads one `proposal.md`. Poll for a `proposal*.md` newer
+than the run's render time — the **glob**, not the bare name: a browser renames a repeat download
+to `proposal (1).md`. `$HOME/Downloads` is only right on macOS and Linux:
+
+| Shell | `$DL` |
+|---|---|
+| macOS / Linux | `$HOME/Downloads` |
+| Git Bash | `$USERPROFILE/Downloads` (Git Bash's `$HOME` is not the Windows profile) |
+| WSL | `$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null \| tr -d '\r')")/Downloads` |
+| PowerShell | the registry value below (honors a relocated Downloads folder) |
+
+POSIX (macOS, Linux, Git Bash, WSL):
+
+```
+# find, not a glob: zsh aborts an unmatched glob with "no matches found" before ls runs, so 2>/dev/null can't silence it
+newest() { find "$DL" -maxdepth 1 -name 'proposal*.md' -newer "$RUN/proposal.md" 2>/dev/null | head -1; }
+until f=$(newest) && [ -n "$f" ]; do sleep 2; done
+```
+
+PowerShell:
+
+```powershell
+$DL = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders').'{374DE290-123F-4565-9164-39C4925E467B}'
+$DL = [Environment]::ExpandEnvironmentVariables($DL)
+$rendered = (Get-Item "$RUN\proposal.md").LastWriteTimeUtc
+do { Start-Sleep 2; $f = Get-ChildItem "$DL\proposal*.md" -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 } until ($f -and $f.LastWriteTimeUtc -gt $rendered)
+```
+
+Adopt the newest match as the run's `proposal.md` (`mv "$f" "$RUN/proposal.md"`; PowerShell
+`Move-Item $f.FullName "$RUN\proposal.md" -Force`) and delete no other `proposal*.md` in the
+download folder — an older one may belong to a different run.

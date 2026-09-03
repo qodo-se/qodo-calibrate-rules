@@ -16,16 +16,11 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { buildGuardMatchers, compareRuleIds, guardHits, parseSnapshot, requireNode20, validateSnapshot } from './lib/calibrate-lib.mjs';
-import { errorOf, forwardStderr, parseJsonOutput, RATE_LIMIT_CODE, sleep, spawnLauncher, stderrTail, TIMEOUT_MS, TRUNCATED_CODE } from './lib/launcher-lib.mjs';
+import { DEFAULT_READ_ARGS, ExportError, fetchAll } from './lib/export-lib.mjs';
 
 requireNode20();
 
-const PAGE_SIZE = 100; // rules-list maximum; halved when the runtime truncates a page
-const MIN_PAGE_SIZE = 10;
 const BATCH_SIZE = 40;
-const RATE_LIMIT_WAIT_MS = 5000;
-const PAGE_TIMEOUT_MS = TIMEOUT_MS;
-const DEFAULT_READ_ARGS = 'read rules list';
 
 function fail(code, message) {
   process.stderr.write(`export-rules: ${message}\n`);
@@ -56,88 +51,6 @@ function parseArgs(argv) {
   args.readArgs = args.readArgs.trim().split(/\s+/).filter(Boolean);
   if (!args.readArgs.length) fail(1, '--read-args must name the rules-list read command, e.g. "read rules list"');
   return args;
-}
-
-function runPage(launcher, readArgs, page, pageSize) {
-  const argv = [...readArgs, '--state', 'active', '--page-size', String(pageSize), '--page', String(page), '--json'];
-  const res = spawnLauncher(launcher, argv);
-  const tail = stderrTail(res.stderr);
-  const withTail = (err) => ({ error: err, tail });
-  if (res.error) {
-    if (res.error.code === 'ETIMEDOUT') return withTail({ code: 'timeout', message: `page ${page} did not finish within ${PAGE_TIMEOUT_MS / 1000} s` });
-    return withTail({ code: 'spawn_failed', message: `${launcher}: ${res.error.message}` });
-  }
-  // Forward notices (e.g. QODO_NOTICE) but drop the CLI's trace lines.
-  forwardStderr(res.stderr);
-  if ((res.stderr || '').includes(RATE_LIMIT_CODE)) return withTail({ code: RATE_LIMIT_CODE, message: 'rate limited (reported on stderr)' });
-  const parsed = parseJsonOutput(res.stdout);
-  if (parsed.error) return withTail(parsed.error);
-  const err = errorOf(parsed.payload);
-  if (err) return withTail(err);
-  if (res.status !== 0) return withTail({ code: 'non_zero_exit', message: `launcher exited ${res.status}` });
-  const { payload } = parsed;
-  if (!Array.isArray(payload.rules) || typeof payload.totalCount !== 'number') {
-    return withTail({ code: 'unexpected_shape', message: `expected {page,totalCount,rules[]}, got keys ${Object.keys(payload).join(',')}` });
-  }
-  return { payload };
-}
-
-function fetchPage(launcher, readArgs, page, pageSize) {
-  let attempt = runPage(launcher, readArgs, page, pageSize);
-  if (attempt.error && attempt.error.code === RATE_LIMIT_CODE) {
-    process.stderr.write(`export-rules: page ${page} rate limited (${RATE_LIMIT_CODE}); waiting ${RATE_LIMIT_WAIT_MS / 1000}s and retrying once\n`);
-    sleep(RATE_LIMIT_WAIT_MS);
-    attempt = runPage(launcher, readArgs, page, pageSize);
-  }
-  return attempt;
-}
-
-function describe(result, page, pageSize) {
-  const e = result.error;
-  const tail = result.tail ? ` (stderr: ${result.tail})` : '';
-  return `page ${page} (page size ${pageSize}) failed: ${e.code} — ${e.message}${tail}`;
-}
-
-// Pages the whole active set. On a truncated page the page size is halved and paging resumes
-// from the already-fetched prefix (after N-1 full pages of size S, page 2(N-1)+1 of size S/2).
-function fetchAll(launcher, readArgs) {
-  let pageSize = PAGE_SIZE;
-  let page = 1;
-  let rules = [];
-  let totalCount = null;
-  let pages = 0;
-  for (;;) {
-    const result = fetchPage(launcher, readArgs, page, pageSize);
-    if (result.error) {
-      if (result.error.code !== TRUNCATED_CODE) {
-        fail(2, `${describe(result, page, pageSize)}; fetched ${rules.length} of ${totalCount ?? 'unknown'} before the failure. Nothing written.`);
-      }
-      const smaller = Math.floor(pageSize / 2);
-      if (smaller < MIN_PAGE_SIZE) fail(2, `page ${page} still truncated at page size ${pageSize} and the minimum is ${MIN_PAGE_SIZE} (${result.error.message}). Nothing written.`);
-      if (rules.length % smaller === 0) {
-        page = rules.length / smaller + 1;
-        process.stderr.write(`export-rules: page truncated by the runtime (${result.error.message}); keeping ${rules.length} fetched rules and continuing at page ${page} with page size ${smaller}\n`);
-      } else {
-        page = 1;
-        rules = [];
-        process.stderr.write(`export-rules: page truncated by the runtime (${result.error.message}); page size ${smaller} does not align with the fetched prefix, restarting from page 1\n`);
-      }
-      pageSize = smaller;
-      continue;
-    }
-    const { payload } = result;
-    pages++;
-    if (totalCount === null) totalCount = payload.totalCount;
-    else if (payload.totalCount !== totalCount) {
-      fail(2, `totalCount changed during paging (${totalCount} → ${payload.totalCount} on page ${page}); rules changed under us. Re-run. Nothing written.`);
-    }
-    if (payload.rules.length === 0) break;
-    rules.push(...payload.rules);
-    if (rules.length > totalCount) fail(2, `paging is not advancing: ${rules.length} rules after page ${page} exceeds totalCount ${totalCount}. Nothing written.`);
-    if (rules.length >= totalCount) break;
-    page++;
-  }
-  return { rules, totalCount, pages, pageSize };
 }
 
 // The plain-text view of a batch: a header line per rule, then its content verbatim.
@@ -182,7 +95,14 @@ function main() {
   if (problems.length) fail(2, `${snapshotPath} is not a valid rubric snapshot: ${problems.join('; ')}`);
   const matchers = buildGuardMatchers(effective.guard_terms);
 
-  const { rules, totalCount, pages, pageSize } = fetchAll(args.qodo, args.readArgs);
+  let fetched;
+  try {
+    fetched = fetchAll(args.qodo, args.readArgs, { name: 'export-rules' });
+  } catch (e) {
+    if (e instanceof ExportError) fail(2, `${e.message} Nothing written.`);
+    throw e;
+  }
+  const { rules, totalCount, pages, pageSize } = fetched;
 
   const ids = new Set();
   for (const r of rules) {

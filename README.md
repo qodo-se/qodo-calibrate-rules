@@ -1,6 +1,6 @@
 # qodo-standards-calibrate
 
-Version 0.6.2 of this coding-agent skill turns a workspace-wide severity review into one
+Version 0.7.0 of this coding-agent skill turns a workspace-wide severity review into one
 reviewable, resumable batch. It checks the CLI version, authentication, workspace admin
 permission, and the tool catalog; creates an editable rubric file on first run; exports every
 active Qodo Review Standards rule into a local run folder; classifies each rule against a fixed
@@ -10,10 +10,11 @@ agent never loads rule text; renders a diff-only proposal checklist grouped by
 direction and tag; reads the admin's edits back as approve, skip, or override with invalid values
 reported by row; and, after an explicit confirmation, applies the approved rows as a single
 generated script, writing a per-row receipt and remembering every decision so a later run does
-not ask twice. **`severity` is the only field it ever writes**, one rule at a time, with an
-idempotency key per row and a receipt an interrupted run resumes from. Verifying the applied rows
-and reverting a run from its receipt arrive in a later version. Changing a single rule's severity
-is not this skill's job — use `qodo-manage-standards` for that.
+not ask twice. It then re-reads every rule to confirm the workspace really holds what the receipt
+claims, and can put the whole run back where it started from that same receipt. **`severity` is the
+only field it ever writes**, one rule at a time, with an idempotency key per row and a receipt an
+interrupted run resumes from. Changing a single rule's severity is not this skill's job — use
+`qodo-manage-standards` for that.
 
 ## How a run goes
 
@@ -46,7 +47,19 @@ is not this skill's job — use `qodo-manage-standards` for that.
    did not by id and code.
 8. **Resume** — an interrupted apply is re-generated and re-run from the receipt: rows already
    `applied` are never attempted again, so no rule is written twice.
-9. **Remember** — the skipped rules, and the rows that actually applied, go into
+9. **Verify** — a read-only re-read of every active rule, paged the same way the export is,
+    comparing each row's live severity to what the receipt expects: the target for a row the loop
+    applied, the current severity for anything else. Each row is marked `verified` or
+    `mismatch(<actual>)` (or `mismatch(missing)` if the rule is gone), and the run exits non-zero
+    with every mismatch listed by id. An `applied` row is never trusted without this read — a row
+    whose update timed out or printed garbage may well have landed anyway, and verify is what says
+    so.
+10. **Revert** — on request only, the same loop backwards: a `revert.sh` generated from the
+    receipt puts every row the receipt shows as changed back at its pre-change severity, under its
+    own idempotency key, with a per-row `reverted` or `failed(revert:<code>)` status. It writes no
+    ledger entry — an approval is remembered only while the rule sits at the approved severity, so
+    a reverted rule is simply proposed again. Once a run is reverted it is closed for apply.
+11. **Remember** — the skipped rules, and the rows that actually applied, go into
     `decisions.jsonl`. Saying "reconsider rule 815412" releases one so the next proposal includes
     it again.
 
@@ -96,16 +109,19 @@ repository or the skill install directory.
   run used), `classification.jsonl` (append-only, one line per rule per recording: tag,
   current and proposed severity, direction, guard hits, and whether the row needs an admin
   decision; the last line per rule wins, so parallel classifiers never conflict), `proposal.md` (the checklist the admin edits), `receipt.md` (that checklist plus a status
-  token per row and the apply's exit code), `apply.sh` (the generated loop that was executed, kept
-  for audit), and `apply-results.jsonl` (every attempt, appended). Re-running in the same folder
+  token per row and the apply's, verify's and revert's exit codes), `apply.sh` and — after a revert
+  is generated — `revert.sh` (the generated loops that were executed, kept for audit), and
+  `apply-results.jsonl` (every attempt of every phase, appended, each line tagged
+  `phase: apply | verify | revert`). Re-running in the same folder
   resumes at the first unclassified batch or the first unapplied row; `proposal.md` is never
   modified by the apply step and never overwritten without an explicit `--replace`.
 
-The receipt grammar, the apply script's shape, the failure policy, the exit codes, and the resume
-rules are documented in `skills/qodo-standards-calibrate/references/receipt-format.md`.
+The receipt grammar, the apply and revert scripts' shape, the failure policy, the exit codes, the
+resume rules, and what verify compares are documented in
+`skills/qodo-standards-calibrate/references/receipt-format.md`.
 
-**Windows.** `apply.sh` is POSIX `sh`. Run it under **Git Bash** or **WSL**; there is no
-PowerShell equivalent. The rest of the workflow runs in PowerShell, but pass JSON arguments
+**Windows.** `apply.sh` and `revert.sh` are POSIX `sh`. Run them under **Git Bash** or **WSL**;
+there is no PowerShell equivalent. The rest of the workflow runs in PowerShell, but pass JSON arguments
 through `--tags-file` rather than inline single quotes.
 
 ## License

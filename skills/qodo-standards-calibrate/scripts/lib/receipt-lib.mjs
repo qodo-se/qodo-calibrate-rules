@@ -17,10 +17,11 @@
 import { readFileSync } from 'node:fs';
 import { parseFrontmatter, parseRow } from './proposal-lib.mjs';
 
-export const SKILL_VERSION = '0.6.2';
+export const SKILL_VERSION = '0.7.0';
 export const RECEIPT_FILE = 'receipt.md';
 export const RESULTS_FILE = 'apply-results.jsonl';
 export const SCRIPT_FILE = 'apply.sh';
+export const REVERT_SCRIPT_FILE = 'revert.sh';
 export const DEFAULT_UPDATE_ARGS = 'rules update';
 
 // Per-row exit codes are the loop's control channel.
@@ -33,17 +34,121 @@ export const EXIT = Object.freeze({ applied: 0, failed: 10, deferred: 20, abort:
 export const STATUS_TOKEN = '(?: · (?:applied|failed\\([^)]*\\)|deferred|skipped|verified|mismatch\\([^)]*\\)|reverted))';
 export const STATUS_RE = new RegExp(`(${STATUS_TOKEN}+)[ \\t]*$`);
 
+// The verify class: written by verify.mjs, and skipped when the apply state is read back. Every
+// other token is an apply-class token.
+const VERIFY_TOKEN_RE = /^(?:verified|mismatch\([^)]*\))$/;
+
+// The revert class: tokens only a revert writes. The apply report ignores these, because they say
+// what happened *after* the apply, not what the apply did.
+const REVERT_TOKEN_RE = /^(?:reverted|failed\(revert:[^)]*\))$/;
+
+// A severity is only allowed inside a `mismatch(…)` token if it cannot break the token grammar:
+// a `)` would end the token early and a ` · ` or a newline would look like a token boundary, so
+// STATUS_RE would stop matching the row and the whole receipt would stop parsing. Anything the
+// platform hands back that is not a plain word becomes `unknown` — the row still says the
+// workspace disagreed, which is the part that matters.
+const SEVERITY_WORD_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]*$/;
+
+export function severityWord(value) {
+  const text = value === null || value === undefined ? '' : String(value).trim();
+  return text && SEVERITY_WORD_RE.test(text) ? text : 'unknown';
+}
+
 // Result statuses that folding turns into a token. `aborted` and `retrying` are recorded for the
 // audit trail but leave the row pending — an abort-class error must not mark the row.
+//
+// A revert-phase result is tokenised differently on purpose: a revert that did not take means the
+// rule is *still at the apply target*, so it must not read as a plain `failed(<code>)` (which
+// would make the apply state `failed` and flip the expected severity). `failed(revert:<code>)`
+// stays inside the `failed(…)` grammar, keeps the apply state `applied`, and is therefore picked
+// up again by the next `--generate --revert`. An exhausted rate-limit retry folds the same way.
 const TOKEN_FOR = Object.freeze({
   applied: () => 'applied',
-  failed: (code) => `failed(${code || 'unknown'})`,
-  deferred: () => 'deferred',
+  failed: (r) => (r.phase === 'revert' ? `failed(revert:${r.code || 'unknown'})` : `failed(${r.code || 'unknown'})`),
+  deferred: (r) => (r.phase === 'revert' ? `failed(revert:${r.code || 'unknown'})` : 'deferred'),
+  verified: () => 'verified',
+  mismatch: (r) => `mismatch(${severityWord(r.actual)})`,
+  reverted: () => 'reverted',
 });
 
 export function statusToken(result) {
   const make = TOKEN_FOR[String(result?.status ?? '')];
-  return make ? make(result.code) : null;
+  return make ? make(result ?? {}) : null;
+}
+
+// Every status token, as a list, whatever the caller had at hand.
+function tokenList(statuses) {
+  return typeof statuses === 'string' ? splitStatus(statuses).statuses : (statuses ?? []);
+}
+
+// The row's last apply-class token, verbatim (`applied`, `failed(MT-VALIDATION)`,
+// `failed(revert:…)`, `deferred`, `skipped`, `reverted`), or null when the row is pending.
+export function applyToken(statuses) {
+  const list = tokenList(statuses);
+  for (let i = list.length - 1; i >= 0; i--) if (!VERIFY_TOKEN_RE.test(list[i])) return list[i];
+  return null;
+}
+
+// The row's apply state: what the loop did, with `failed(<code>)` collapsed to `failed` and the
+// one twist that `failed(revert:<code>)` reads as `applied` — the revert did not take, so the rule
+// is still sitting at the apply target. Verify expects `target` for `applied` and `current` for
+// everything else.
+export function applyState(statuses) {
+  const token = applyToken(statuses);
+  if (token === null) return 'pending';
+  if (token.startsWith('failed(revert:')) return 'applied';
+  if (token.startsWith('failed(')) return 'failed';
+  return token;
+}
+
+// The apply state the *apply* report reads: the last token that is neither verify-class nor
+// revert-class. A row the apply wrote and a later revert failed to undo (`failed(revert:…)`) or
+// did undo (`reverted`) was still applied by this loop, and the apply report is a record of that
+// loop — the revert has its own report. Keeping the two views apart is why this is a separate
+// function from `applyState`, which answers "where is the rule now?".
+export function applyPhaseState(statuses) {
+  const list = tokenList(statuses);
+  for (let i = list.length - 1; i >= 0; i--) {
+    const t = list[i];
+    if (VERIFY_TOKEN_RE.test(t) || REVERT_TOKEN_RE.test(t)) continue;
+    return t.startsWith('failed(') ? 'failed' : t;
+  }
+  return 'pending';
+}
+
+// The row's last verify-class token (`verified`, `mismatch(<actual>)`), or null when the row has
+// never been read back.
+export function verifyState(statuses) {
+  const list = tokenList(statuses);
+  for (let i = list.length - 1; i >= 0; i--) if (VERIFY_TOKEN_RE.test(list[i])) return list[i];
+  return null;
+}
+
+// The severity a `mismatch(<actual>)` token reports, or null for anything else.
+export function mismatchActual(token) {
+  const m = /^mismatch\(([^)]*)\)$/.exec(String(token ?? ''));
+  return m ? m[1] : null;
+}
+
+// Does the receipt say this row's rule is believed to sit at something other than `current`?
+// That is what revert has to undo:
+//   - apply state `applied` — the loop wrote `target` (a `failed(revert:…)` row included: the
+//     revert did not take, so it is still at `target` and must be re-sent), or
+//   - the last verify token is `mismatch(<actual>)` with an actual that is not `current`
+//     (nothing to undo).
+// Two states are never candidates: a row already `reverted` (which is what makes a revert
+// resumable) and a row whose last verify token is `mismatch(missing)` — the rule is gone from the
+// active set, so there is nothing to write a severity to and an update would only fail with a
+// not-found code.
+export function isRevertCandidate(row) {
+  const statuses = row?.statuses ?? [];
+  const state = applyState(statuses);
+  if (state === 'reverted') return false;
+  const actual = mismatchActual(verifyState(statuses));
+  if (actual === 'missing') return false;
+  if (state === 'applied') return true;
+  if (actual === null) return false;
+  return String(actual).toLowerCase() !== String(row?.current ?? '').toLowerCase();
 }
 
 // { row, statuses, eol } — the line without its trailing tokens, the tokens in file order, and
@@ -99,7 +204,16 @@ export function parseReceipt(text) {
     if (!isRowLine(line)) continue;
     const { statuses } = splitStatus(line);
     const body = rowBody(line);
-    rows.push({ ...parseRow(body, i + 1), raw: line, stripped: body, statuses, status: effectiveStatus(statuses) });
+    rows.push({
+      ...parseRow(body, i + 1),
+      raw: line,
+      stripped: body,
+      statuses,
+      status: effectiveStatus(statuses),
+      apply_state: applyState(statuses),
+      apply_token: applyToken(statuses),
+      verify_state: verifyState(statuses),
+    });
   }
   return { frontmatter, rows, error };
 }
@@ -213,13 +327,16 @@ export function shq(value) {
   return `"${String(value).replace(/([\\"$`])/g, '\\$1')}"`;
 }
 
-export function idempotencyKey(runId, ruleId) {
-  return `calibrate-${runId}-${ruleId}`;
+// Revert's key is deliberately *not* the apply key. `--idempotency-key` semantics are server-side
+// and unverified: a server that replayed the cached response for `calibrate-<run>-<id>` would
+// answer a revert with the apply's result and the revert would look like it worked.
+export function idempotencyKey(runId, ruleId, mode = 'apply') {
+  return mode === 'revert' ? `calibrate-revert-${runId}-${ruleId}` : `calibrate-${runId}-${ruleId}`;
 }
 
 // The exact argv `--row` hands the launcher, and the comment the script carries per row.
-export function updateArgv({ updateArgs, ruleId, target, runId }) {
-  return [...updateArgs, '--rule-id', String(ruleId), '--severity', target, '--json', '--idempotency-key', idempotencyKey(runId, ruleId)];
+export function updateArgv({ updateArgs, ruleId, target, runId, mode = 'apply' }) {
+  return [...updateArgs, '--rule-id', String(ruleId), '--severity', target, '--json', '--idempotency-key', idempotencyKey(runId, ruleId, mode)];
 }
 
 // The exit codes that stop the loop. 30 is the abort class proper; 1 (usage / Node too old),
@@ -237,23 +354,29 @@ export const STOP_CODES = Object.freeze([EXIT.abort, EXIT.usage, EXIT.refused, 1
 // `node` is embedded as the absolute interpreter path (`process.execPath`), not the bare word: a
 // non-interactive `sh` can have a minimal PATH — exactly the environment a GUI-launched agent
 // runs in — and a `node: not found` for every row would otherwise look like a workspace failure.
-export function renderApplyScript({ runDir, scriptsDir, launcher, updateArgs = DEFAULT_UPDATE_ARGS, runId, rows, node = process.execPath, now = new Date() }) {
+// `mode: 'revert'` changes four things and nothing else: the header word, `--revert` on each row
+// call, `--revert` on the final `--write-receipt`, and the per-row comment's idempotency key. The
+// `row` function, ABORTED, STOP_CODES, and the absent `set -e` are byte-identical, because the
+// revert loop *is* the apply loop with a different target column.
+export function renderApplyScript({ runDir, scriptsDir, launcher, updateArgs = DEFAULT_UPDATE_ARGS, runId, rows, mode = 'apply', node = process.execPath, now = new Date() }) {
   const applyPath = `${scriptsDir}/apply.mjs`;
+  const reverting = mode === 'revert';
+  const flag = reverting ? ' --revert' : '';
   const tail = updateArgs.trim() === DEFAULT_UPDATE_ARGS ? '' : ` --update-args ${shq(updateArgs.trim())}`;
   const stop = STOP_CODES.join('|');
   const out = [
     '#!/bin/sh',
-    `# qodo-standards-calibrate ${SKILL_VERSION} · run ${runId} · ${rows.length} row${rows.length === 1 ? '' : 's'} · generated ${now.toISOString()} · do not edit`,
-    '# One Bash invocation applies the whole batch: sh apply.sh. Never run the rows by hand.',
+    `# qodo-standards-calibrate ${SKILL_VERSION} · run ${runId}${reverting ? ' · revert' : ''} · ${rows.length} row${rows.length === 1 ? '' : 's'} · generated ${now.toISOString()} · do not edit`,
+    `# One Bash invocation ${reverting ? 'reverts' : 'applies'} the whole batch: sh ${reverting ? REVERT_SCRIPT_FILE : SCRIPT_FILE}. Never run the rows by hand.`,
     'set -u',
     'ABORTED=0',
-    `row() { [ "$ABORTED" -eq 1 ] && return 0; ${shq(node)} ${shq(applyPath)} --run ${shq(runDir)} --qodo ${shq(launcher)}${tail} --row "$1" --target "$2"; rc=$?; case "$rc" in ${stop}) ABORTED=1 ;; *) if [ "$rc" -gt 128 ]; then ABORTED=1; fi ;; esac; return 0; }`,
+    `row() { [ "$ABORTED" -eq 1 ] && return 0; ${shq(node)} ${shq(applyPath)} --run ${shq(runDir)} --qodo ${shq(launcher)}${tail} --row "$1" --target "$2"${flag}; rc=$?; case "$rc" in ${stop}) ABORTED=1 ;; *) if [ "$rc" -gt 128 ]; then ABORTED=1; fi ;; esac; return 0; }`,
   ];
   const words = updateArgs.trim().split(/\s+/).filter(Boolean);
   for (const row of rows) {
-    const argv = updateArgv({ updateArgs: words, ruleId: row.rule_id, target: row.target, runId });
+    const argv = updateArgv({ updateArgs: words, ruleId: row.rule_id, target: row.target, runId, mode });
     out.push(`row ${row.rule_id} ${row.target}    # qodo ${argv.join(' ')}`);
   }
-  out.push(`exec ${shq(node)} ${shq(applyPath)} --run ${shq(runDir)} --write-receipt`, '');
+  out.push(`exec ${shq(node)} ${shq(applyPath)} --run ${shq(runDir)} --write-receipt${flag}`, '');
   return out.join('\n');
 }

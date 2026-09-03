@@ -55,17 +55,30 @@ test('SKILL_VERSION matches SKILL.md metadata and the Quick start provenance fla
   const provenance = skill.match(/--skill-version\s+(\S+)/);
   assert.ok(provenance, 'SKILL.md Quick start --skill-version');
   assert.equal(provenance[1], SKILL_VERSION);
-  assert.ok(readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8').includes(`Version ${SKILL_VERSION}`), 'README version line');
+  // Captured and compared, not `includes`: an `includes` still passes when the bump added the new
+  // number somewhere and left a stale `Version 0.x.y` line behind.
+  const readme = readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8');
+  const versions = [...readme.matchAll(/^Version (\S+)/gm)].map((m) => m[1]);
+  assert.deepEqual(versions, [SKILL_VERSION], 'README names exactly this version');
+  // And no stale semver anywhere else in either doc.
+  for (const [name, text] of [['README.md', readme], ['SKILL.md', skill]]) {
+    for (const found of [...text.matchAll(/\b\d+\.\d+\.\d+\b/g)].map((m) => m[0])) {
+      if (found === '0.1.0') continue; // the documented CLI minimum, not this skill's version
+      assert.equal(found, SKILL_VERSION, `${name} mentions ${found}`);
+    }
+  }
 });
 
 test('receipt-format.md documents the status tokens the code can write', () => {
   const doc = readFileSync(join(SKILL_DIR, 'references', 'receipt-format.md'), 'utf8');
-  for (const token of ['applied', 'failed(<code>)', 'deferred', 'skipped', 'verified', 'reverted']) {
+  for (const token of ['applied', 'failed(<code>)', 'deferred', 'skipped', 'verified', 'mismatch(<actual>)', 'reverted']) {
     assert.ok(doc.includes(`\`· ${token}\``) || doc.includes(`· ${token}`), `receipt-format.md token ${token}`);
   }
   // Every token the grammar strips must be named, so the page and STATUS_RE cannot drift.
-  for (const token of ['applied', 'deferred', 'skipped', 'verified', 'reverted']) {
+  for (const token of ['applied', 'deferred', 'skipped', 'verified', 'reverted', 'mismatch(warning)', 'failed(revert:MT-VALIDATION)']) {
     assert.ok(splitStatus(`- [x] 1 · n · s · warning → error · https://x/1 · ${token}`).statuses.length === 1, `STATUS_RE knows ${token}`);
+  }
+  for (const token of ['applied', 'deferred', 'skipped', 'verified', 'reverted']) {
     assert.ok(doc.includes(token), `receipt-format.md mentions ${token}`);
   }
 });

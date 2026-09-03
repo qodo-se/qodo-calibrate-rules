@@ -4,7 +4,7 @@ description: Calibrate the severity of every active Qodo Review Standards rule a
 owner: Qodo
 metadata:
   vendor: qodo
-  version: "0.6.2"
+  version: "0.7.0"
   recommended: "false"
   package: "qodo-standards"
   distribution: "skills-sh"
@@ -22,10 +22,10 @@ is the workspace-wide counterpart to `qodo-manage-standards`: changing one rule'
 the X rule an error") belongs there; re-levelling many rules at once belongs here. Reading and
 applying rules while coding belongs to `qodo-get-rules`.
 
-**This version implements preflight, rubric, export, classification (delegated to classifier
-subagents), the proposal, an optional browser review page, the approval readback, and apply with a
-resumable receipt.** **Apply is the only write, and it writes only `severity`.** Verify and revert
-arrive later.
+**This version implements every phase: preflight, rubric, export, classification (delegated to
+classifier subagents), the proposal, an optional browser review page, the approval readback, apply
+with a resumable receipt, a read-only verify, and a revert of the run from its receipt.** **Apply
+and revert are the only writes, and they write only `severity`.**
 
 ## Prerequisites
 
@@ -39,11 +39,11 @@ arrive later.
 Follow the workflow in order: preserve update notices, resolve the executable, pass the
 compatibility gate, confirm authentication with provenance stamped on the first call, confirm admin
 permission, confirm the tool catalog, then run the rubric, export, classify, propose, approve, and
-apply phases and report the verified outcome. The provenance flags (`--skill`, `--skill-version`,
-`--distribution`) go on the first authenticated call — `qodo read whoami` — only. Every phase
-before Apply is read-only against the workspace; Apply writes each approved row's `severity` and
-nothing else, and every file written lives under `${QODO_HOME:-$HOME/.qodo}/calibrate/`. Stop at
-the first failed step with its plain message.
+apply and verify phases and report the outcome (revert only if the admin asks). The provenance
+flags (`--skill`, `--skill-version`, `--distribution`) go on the first authenticated call — `qodo
+read whoami` — only. Every phase but Apply and Revert is read-only against the workspace; those two
+write each row's `severity` and nothing else, and every file lives under
+`${QODO_HOME:-$HOME/.qodo}/calibrate/`. Stop at the first failed step with its plain message.
 
 `<skill-dir>` is the directory containing this SKILL.md; its `scripts/` and `references/` folders
 ship with the skill. `<launcher>` is the resolved `qodo` executable from the fallback below.
@@ -83,7 +83,7 @@ Compare versions as semver: a prerelease `0.1.0-next.N` orders by N numerically 
 
 ```
 qodo --version                                                      # compatibility probe — run this FIRST
-qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.6.2 --distribution skills-sh
+qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.7.0 --distribution skills-sh
 qodo tools --json                                                   # catalog must list rules-update, rules-list, rules-get, rules-metadata
 ls "${QODO_HOME:-$HOME/.qodo}/calibrate/runs/"                                      # an interrupted run to resume?
 RUN="${QODO_HOME:-$HOME/.qodo}/calibrate/runs/$(date -u +%Y%m%d-%H%M%S)"            # new run id (skip when resuming)
@@ -98,13 +98,16 @@ node <skill-dir>/scripts/approve.mjs --run "$RUN" --readback                    
 node <skill-dir>/scripts/approve.mjs --run "$RUN" --record-skips                    # only after the admin says yes
 node <skill-dir>/scripts/apply.mjs --run "$RUN" --generate --qodo <launcher>        # writes receipt.md + apply.sh
 sh "$RUN/apply.sh"                                                                  # ONE invocation applies the batch
+node <skill-dir>/scripts/verify.mjs --run "$RUN" --qodo <launcher>                  # read-only re-read; tokens every applied row
+node <skill-dir>/scripts/apply.mjs --run "$RUN" --generate --revert --qodo <launcher>  # only if the admin asks to undo
+sh "$RUN/revert.sh"                                                                 # ONE invocation puts the batch back
 node <skill-dir>/scripts/ledger.mjs --show                                          # what earlier runs decided
 node <skill-dir>/scripts/ledger.mjs --reconsider <ruleId>                           # release a held rule
 ```
 
 **Windows.** PowerShell run-id line:
 `$RUN = Join-Path $qodoHome "calibrate/runs/$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"`.
-Always pass JSON through `--tags-file`; single-quoted JSON does not survive PowerShell quoting. `apply.sh` is POSIX `sh`: run it under Git Bash or WSL.
+Always pass JSON through `--tags-file`; single-quoted JSON does not survive PowerShell quoting. `apply.sh` and `revert.sh` are POSIX `sh`: run them under Git Bash or WSL.
 
 **`qodo: command not found`?** That's usually PATH, not a missing install: GUI-launched agents run
 shells with a minimal PATH. On POSIX, retry `"${QODO_HOME:-$HOME/.qodo}/bin/qodo"`. In Windows
@@ -304,69 +307,29 @@ If they choose the browser:
    The script inlines the page and the run's `proposal.md`, `classification.jsonl`, and
    `export.json` into one self-contained `review.html`, so it opens from the file system: no
    server, no port, nothing to stop. It refuses with exit 2 and writes nothing when a run file is
-   missing. Optional query parameters on the URL: `?density=comfortable` for taller rows,
-   `?expand=inc,dec` to open the increase and decrease groups on load (needs-a-decision is always
-   open). The page never talks to the network beyond loading its two web fonts.
-
-   Tell the admin: *"Opened the review page: [review.html](file:///abs/path/to/run-dir/review.html).
-   Approve, skip, or override each row, then click Commit decisions — I'm waiting for the file and
-   will read it back to you before anything is applied."* If `open` fails or is denied, the link
-   is the fallback — the admin clicks it instead.
+   missing. Optional URL parameters: `?density=comfortable` for taller rows, `?expand=inc,dec` to
+   open the increase and decrease groups on load. The page never talks to the network beyond its
+   two web fonts. Tell the admin: *"Opened the review page:
+   [review.html](file:///abs/path/to/run-dir/review.html). Approve, skip, or override each row,
+   then click Commit decisions — I'm waiting for the file and will read it back to you before
+   anything is applied."* If `open` fails or is denied, the link is the fallback.
 
 2. **Wait for the hand-off.** *Commit decisions* downloads one file, `proposal.md`: the input file
    with each row's checkbox (`[x]` approve, `[ ]` skip, `[?]` deferred) and, for an override, the
-   value after `→` rewritten in the exact row grammar `approve.mjs` reads. It is the admin's decision record; nothing else is produced. Poll
-   the browser's download directory for a `proposal*.md` newer than the run's render time. Match
-   the glob, not the bare name: browsers rename a second download to `proposal (1).md` or
-   `proposal(1).md`, and the file is always called `proposal.md`, so the bare name stalls on any
-   repeat. Take the newest match.
-
-   **Resolve the download folder first** — `$HOME/Downloads` is only right on macOS and Linux:
-
-   | Shell | `$DL` |
-   |---|---|
-   | macOS / Linux | `$HOME/Downloads` |
-   | Git Bash | `$USERPROFILE/Downloads` (Git Bash's `$HOME` is not the Windows profile) |
-   | WSL | `$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null \| tr -d '\r')")/Downloads` |
-   | PowerShell | registry value below (honors a relocated Downloads folder) |
-
-   When polling starts, say which folder you are watching and that they can tell you a different
-   path if their browser saves elsewhere. If the folder does not exist, ask instead of waiting.
-
-   POSIX (macOS, Linux, Git Bash, WSL):
-
-   ```
-   # find, not a glob: zsh aborts an unmatched glob with "no matches found" before ls runs, so 2>/dev/null can't silence it
-   newest() { find "$DL" -maxdepth 1 -name 'proposal*.md' -newer "$RUN/proposal.md" 2>/dev/null | head -1; }
-   until f=$(newest) && [ -n "$f" ]; do sleep 2; done
-   ```
-
-   PowerShell:
-
-   ```powershell
-   $DL = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders').'{374DE290-123F-4565-9164-39C4925E467B}'
-   $DL = [Environment]::ExpandEnvironmentVariables($DL)
-   $rendered = (Get-Item "$RUN\proposal.md").LastWriteTimeUtc
-   do { Start-Sleep 2; $f = Get-ChildItem "$DL\proposal*.md" -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 } until ($f -and $f.LastWriteTimeUtc -gt $rendered)
-   ```
-
-   Cap the wait (30 minutes) and say you are waiting. If it ends, say so and fall back to "tell me
-   when you are done editing" or "paste the path of the downloaded file".
+   value after `→` rewritten in the exact row grammar `approve.mjs` reads. Nothing else is
+   produced. Poll the browser's download directory for a `proposal*.md` newer than the run's
+   render time — the per-shell `$DL` table and both poll loops are in
+   `<skill-dir>/references/proposal-format.md` ("Browser hand-off"); read it at this step. Say
+   which folder you are watching and that the admin can name a different one; if it does not
+   exist, ask instead of waiting. Cap the wait (30 minutes), then fall back to "tell me when you
+   are done editing" or "paste the path of the downloaded file".
 
 3. **Adopt the file.** The browser's copy *is* the admin's edited proposal, so it replaces the
-   rendered one:
-
-   ```
-   mv "$f" "$RUN/proposal.md"                       # PowerShell: Move-Item $f.FullName "$RUN\proposal.md" -Force
-   ```
-
-   `$f` is the newest match from the poll, whatever the browser named it; it lands in the run
-   folder as `proposal.md`. Delete no other `proposal*.md` in the download folder — an older one
-   may be from a different run.
-
-   Say: *"Got your decisions from the browser (<a> approve · <o> override · <k> skip · <u>
-   deferred). Reading them back now."* Then continue to **Approve** exactly as written. The readback is still the gate:
-   the button finalizes the admin's *edits*, it does not authorize the apply.
+   rendered one (`mv "$f" "$RUN/proposal.md"` — the reference has the PowerShell form and the rule
+   about leaving other `proposal*.md` files alone). Say: *"Got your decisions from the browser (<a>
+   approve · <o> override · <k> skip · <u> deferred). Reading them back now."* Then continue to
+   **Approve** exactly as written. The readback is still the gate: the button finalizes the admin's
+   *edits*, it does not authorize the apply.
 
 Guardrails for this step:
 
@@ -375,12 +338,10 @@ Guardrails for this step:
 - Never modify `proposal.md` yourself between adopt and readback. If the readback reports `invalid`
   rows, hand them back to the admin (re-open the page, or let them edit the file).
 - Rows the admin left undecided leave the page as `[?]`, i.e. **deferred**: not recorded, proposed
-  again next run. Only an explicit skip is remembered. Repeat the deferred count in the readback
-  summary.
+  again next run. Only an explicit skip is remembered; repeat the deferred count in the readback.
 - If both a browser copy and a hand-edited run-folder copy exist and differ, ask which one wins.
-- Decisions persist in the browser (`localStorage`, keyed by run id), so a refresh does not lose
-  work; a new run id starts clean. `review.html` is a snapshot: re-render the proposal and stage
-  again if the run files change.
+- Decisions persist in the browser (`localStorage`, keyed by run id), so a refresh loses nothing;
+  `review.html` is a snapshot — re-render and stage again if the run files change.
 
 ## Approve
 
@@ -421,23 +382,70 @@ anything other than `qodo rules update`, pass its tail as `--update-args`.
 name them to the admin *before* they say yes and offer to let them fix the file and read it back —
 an invalid override is a severity they asked for and will not get.
 
-Then run `sh "<run-dir>/apply.sh"` — **once, as a single Bash invocation**, path quoted. Never
-call `apply.mjs --row` yourself, never loop over the rows as separate tool calls, and never call
-`qodo rules update` directly: the one invocation is what makes the admin's single confirmation
-cover the batch. Each row runs `qodo rules update --rule-id <id> --severity <target> --json
+Then run `sh "<run-dir>/apply.sh"` — **once, as a single Bash invocation**, path quoted. Never call
+`apply.mjs --row` yourself, never loop over the rows as separate tool calls, and never call `qodo
+rules update` directly: the one invocation is what makes the admin's single confirmation cover the
+batch. Each row runs `qodo rules update --rule-id <id> --severity <target> --json
 --idempotency-key calibrate-<run-id>-<rule-id>` and writes nothing else.
 
-The script ends by printing one JSON report: `counts` (applied, failed, deferred, pending,
-skipped, invalid), `non_applied` with each row's id, status, and code, `invalid`, `aborted`, and
-the receipt path. Exit 0 means every approved row applied; 3 means at least one did not (name each
+The script ends by printing one JSON report: `counts` (applied, failed, deferred, pending, skipped,
+invalid), `non_applied` with each row's id, status, and code, `invalid`, `aborted`, and the receipt
+path. Exit 0 means every approved row applied; 3 means at least one did not (name each
 `non_applied` row by id and code). Report from the JSON, not from the receipt text.
 
 **Resume** by regenerating and re-running the same two commands: rows already `applied` or
 `· skipped` are never re-sent, `failed` and `deferred` rows are. The receipt grammar, failure
-policy, exit codes, resume rules, and **this phase's error handling** (aborts, exit 1/2/3,
-unconfirmed applies, `response_mismatch`) are in `<skill-dir>/references/receipt-format.md` —
-read it when apply ends non-zero or before you explain the receipt. Never edit `receipt.md`,
-`proposal.md`, or `apply.sh` by hand.
+policy, exit codes, resume rules, and **this phase's error handling** are in
+`<skill-dir>/references/receipt-format.md`. Never edit `receipt.md`, `proposal.md`, `apply.sh`, or
+`revert.sh` by hand. Then continue to Verify.
+
+## Verify
+
+Run this after every apply, before you report the outcome:
+
+```
+node <skill-dir>/scripts/verify.mjs --run <run-dir> --qodo <launcher>
+```
+
+Verify is **read-only** and one invocation: it re-reads every active rule with the same paging the
+export uses — never a `rules get` per row — and compares each approve/override row's live severity
+to what the receipt expects (the row's **target** when the apply state is `applied`, its **current**
+otherwise). Each compared row gains `· verified` or `· mismatch(<actual>)`; skipped, `[?]`-deferred
+and invalid rows are never read against but are named in `out_of_scope`. An `applied` row is never trusted without this read.
+
+Report `counts.checked`, `counts.verified` and `counts.mismatch`. `status: nothing_to_verify` means
+no approved row was left to read back — say that, never "verified 0 of 0". Exit 3 means at least one
+mismatch: name each by id, apply state, expected and actual, and say so plainly when one is flagged
+`landed_despite_failure`. Every `out_of_scope` row with `changed_by_apply: true` is always listed
+and is still at the target with no count covering it — name it and offer a revert; ordinary rows
+there stop at 50 (`out_of_scope_omitted` counts the rest), so quote `counts.out_of_scope` for the
+total. Exit 2 wrote nothing; re-running is safe.
+
+## Revert
+
+Only when the admin asks to undo the run — never on your own initiative, never as a reflex to a
+mismatch. Ask before running the script, then run it as **one** Bash invocation:
+
+```
+node <skill-dir>/scripts/apply.mjs --run <run-dir> --generate --revert --qodo <launcher>
+sh "<run-dir>/revert.sh"
+```
+
+`--generate --revert` reads the receipt (never `proposal.md`) and writes `<run-dir>/revert.sh` with
+each row's target set to its **`current`** severity, selecting on the receipt's apply state rather
+than the checkbox so a row unchecked after the apply is still put back. It prints `rows_to_revert`,
+the rule ids, `already_reverted`, `unchecked_but_changed` and `not_candidates` (each with a reason);
+`rows_to_revert: 0` reports `nothing_to_revert` and writes no script. The script is the
+apply loop backwards and ends in one JSON report: `counts`, `non_reverted` by id and code, `aborted`,
+and `closed_for_apply`. Exit 0 means every candidate is back at `current`; one that would not revert
+reads `· failed(revert:<code>)`, re-sent by regenerating.
+
+**Revert writes no ledger entry** — an approval holds a rule only while it sits at the approved
+severity, so a reverted rule is re-proposed next run by itself. A revert that put a row back
+(`closed_for_apply: true`) leaves the run **closed for apply**: `--generate`, `--row` and
+`--write-receipt` without `--revert` refuse; one that reverted nothing leaves apply open, because the
+receipt still describes the workspace. The token grammar, the revert selection rule, and both phases'
+error handling are in `<skill-dir>/references/receipt-format.md`.
 
 ## Decisions ledger
 
@@ -463,13 +471,13 @@ readback, and the apply report:
 ```
 # 🛡️ Qodo Review Standards
 
-**Outcome:** Exported <total_rules> active rules and classified all <rows> against the rubric, then proposed <rows-in-proposal> severity changes (<proposed> pre-checked · <needs_decision> needing a decision · <held_by_prior_decision> held by earlier decisions). Readback: <readback_text>. Applied <counts.applied> of <rows_to_apply> approved rows — <counts.failed> failed · <counts.deferred> deferred · <counts.pending> pending · <counts.skipped> skipped · <counts.invalid> invalid. Recorded <recorded> skips and the applied decisions in the ledger. Verification and revert arrive in a later version of this skill.
-**Scope:** workspace <workspace_id>; run folder [<run-id>/](file:///abs/path/to/run-dir/) — [proposal.md](file:///abs/path/to/run-dir/proposal.md) · [review.html](file:///abs/path/to/run-dir/review.html) if staged · [receipt.md](file:///abs/path/to/run-dir/receipt.md) · [apply-results.jsonl](file:///abs/path/to/run-dir/apply-results.jsonl) (plus export.json, batches/, rubric-snapshot.yaml, classification.jsonl, apply.sh); rubric [rubric.yaml](file:///abs/path/to/calibrate/rubric.yaml) (created this run | <n> overrides applied); ledger [decisions.jsonl](file:///abs/path/to/calibrate/decisions.jsonl)
-**State:** permission <organization_permission>; apply exit code <apply_exit_code>; current severities before this run: <current_counts.error> error · <current_counts.warning> warning · <current_counts.recommendation> recommendation
+**Outcome:** Exported <total_rules> active rules and classified all <rows> against the rubric, then proposed <rows-in-proposal> severity changes (<proposed> pre-checked · <needs_decision> needing a decision · <held_by_prior_decision> held by earlier decisions). Readback: <readback_text>. Applied <counts.applied> of <rows_to_apply> approved rows — <counts.failed> failed · <counts.deferred> deferred · <counts.pending> pending · <counts.skipped> skipped · <counts.invalid> invalid. Recorded <recorded> skips and the applied decisions in the ledger. Verified <counts.verified> of <counts.checked> rows · <counts.mismatch> mismatches.
+**Scope:** workspace <workspace_id>; run folder [<run-id>/](file:///abs/path/to/run-dir/) — [proposal.md](file:///abs/path/to/run-dir/proposal.md) · [review.html](file:///abs/path/to/run-dir/review.html) if staged · [receipt.md](file:///abs/path/to/run-dir/receipt.md) · [apply-results.jsonl](file:///abs/path/to/run-dir/apply-results.jsonl) (plus export.json, batches/, rubric-snapshot.yaml, classification.jsonl, apply.sh, revert.sh); rubric [rubric.yaml](file:///abs/path/to/calibrate/rubric.yaml) (created this run | <n> overrides applied); ledger [decisions.jsonl](file:///abs/path/to/calibrate/decisions.jsonl)
+**State:** permission <organization_permission>; apply exit code <apply_exit_code>; verify exit code <verify_exit_code> (plus <revert_exit_code> if the run was reverted); current severities before this run: <current_counts.error> error · <current_counts.warning> warning · <current_counts.recommendation> recommendation
 ---
 ```
 
-List every non-applied and invalid row by id and code below the block. If the run stops at
+List every non-applied, mismatched, and invalid row by id and code below the block. If the run stops at
 classification or at the open checklist, report the counts and the proposal link and say the
 decision is still open. For an empty workspace the Outcome line says the export found 0 active
 rules and there is nothing to calibrate. Do not render the block when the CLI is missing or too
@@ -480,7 +488,7 @@ non-applied row — those stops get the plain message for that step instead.
 ## Error Handling
 
 Preflight, rubric, export, and classification stops are below. Propose/approve stops are in
-`references/proposal-format.md`; apply stops are in `references/receipt-format.md`.
+`references/proposal-format.md`; apply, verify, and revert stops are in `references/receipt-format.md`.
 
 - **Permission denied (admin required)** — say plainly: *"This requires admin permission in your
   workspace — ask an admin to make the change or grant you access."* Don't retry.
@@ -501,8 +509,8 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
 - **Short or failed export** (`export-rules.mjs` exit 2) — report the counts from stderr and stop;
   no classification. A `totalCount` that changed mid-run means rules were edited during export —
   re-run the script in the same run folder.
-- **Rate limited (`MT-RATE-LIMITED`) or upstream down (`MT-UPSTREAM-DOWN`)** — export waits 5 s
-  and retries the page once; apply retries the row with backoff and then marks it `deferred`. For
+- **Rate limited (`MT-RATE-LIMITED`) or upstream down (`MT-UPSTREAM-DOWN`)** — export and verify
+  wait 5 s and retry the page once; apply and revert retry the row with backoff, then defer it. For
   any other command, wait and retry by hand once; if still failing, report it and stop.
 - **Batch refused** (`record-batch.mjs` exit 2) — the message lists every missing rule or invalid
   tag; the classifier completes the decisions file and records the batch again.
@@ -518,13 +526,16 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
   `rubric.yaml` (first run only), `decisions.jsonl` (the ledger), and `runs/<run-id>/`
   (`export.json`, `batches/`, `rubric-snapshot.yaml`,
   `classification.jsonl`, `proposal.md`, `review.html` (the staged browser page), `receipt.md`,
-  `apply.sh`, `apply-results.jsonl`) — plus the CLI's own catalog cache. Write nothing into the skill install
+  `apply.sh`, `revert.sh`, `apply-results.jsonl`) — plus the CLI's own catalog cache. Write nothing into the skill install
   directory or a repository.
 - **Nothing is written before the admin's explicit yes.** The readback writes nothing, and no
   `apply.sh` is generated or run before the confirmation. Never edit their `proposal.md`,
   `receipt.md`, or `apply.sh`, and never `--replace` a proposal without asking.
-- **The apply loop is one Bash invocation.** `sh "<run-dir>/apply.sh"` and nothing else — never
-  `apply.mjs --row` by hand, never a per-row tool call, never `qodo rules update` directly.
+- **The apply and revert loops are one Bash invocation each.** `sh "<run-dir>/apply.sh"` or `sh
+  "<run-dir>/revert.sh"` and nothing else — never `apply.mjs --row` by hand, never a per-row tool
+  call, never `qodo rules update` directly. Verify is one invocation too, and never per rule.
+- **Revert only on request.** Generating `revert.sh` is harmless; running it writes to every
+  candidate row, so ask first — a mismatch is to report, not a reason to undo the admin's run.
 - **Never fabricate a rule id, scope, or example.** Resolve or ask; an empty result from `list`
   is a valid outcome, not an error.
 - **Classify from the full content, in a fresh context.** Classifiers tag from the whole rule
@@ -542,8 +553,8 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
 - **Documented departure.** The admin's edited checklist plus a confirmed readback of its counts
   authorize the whole apply loop, instead of a confirmation before every write. This is a
   deliberate, documented departure from `qodo-manage-standards`'s confirm-before-every-write
-  guardrail. It is limited to this apply step, writes exactly one field, and records a per-row
-  receipt that supports revert.
+  guardrail. It is limited to the apply step, writes exactly one field, and records a per-row
+  receipt that a verify checks and a revert undoes.
 
 Lead with the bottom line — what was applied, what the admin decided, or what stopped the run and
 why — then the specifics. A short, accurate status beats a wall of JSON.
