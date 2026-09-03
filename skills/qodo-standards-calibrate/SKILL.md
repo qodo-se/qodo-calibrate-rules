@@ -4,7 +4,7 @@ description: Calibrate the severity of every active Qodo Review Standards rule a
 owner: Qodo
 metadata:
   vendor: qodo
-  version: "0.6.0"
+  version: "0.6.1"
   recommended: "false"
   package: "qodo-standards"
   distribution: "skills-sh"
@@ -83,7 +83,7 @@ Compare versions as semver: a prerelease `0.1.0-next.N` orders by N numerically 
 
 ```
 qodo --version                                                      # compatibility probe — run this FIRST
-qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.6.0 --distribution skills-sh
+qodo read whoami --json --skill qodo-standards-calibrate --skill-version 0.6.1 --distribution skills-sh
 qodo tools --json                                                   # catalog must list rules-update, rules-list, rules-get, rules-metadata
 ls "${QODO_HOME:-$HOME/.qodo}/calibrate/runs/"                                      # an interrupted run to resume?
 RUN="${QODO_HOME:-$HOME/.qodo}/calibrate/runs/$(date -u +%Y%m%d-%H%M%S)"            # new run id (skip when resuming)
@@ -269,7 +269,8 @@ It refuses with exit 2 and writes nothing when the classification is incomplete 
 remaining batches) or `proposal.md` already exists. `--replace` overwrites it — ask the admin first, because their edits
 are discarded.
 
-Then hand the file to the admin: the path, and that a checked row is approved, clearing the box
+Then hand the file to the admin: the path as a clickable link (see **Hand-off paths** under
+Guardrails), and that a checked row is approved, clearing the box
 (`[ ]`) skips it and is remembered, `[?]` defers it to the next run without recording anything,
 editing the value after `→` is an override, and needs-a-decision rows start as `[?]` because a
 guard term or the platform category contradicts the decrease. Offer the browser review page
@@ -280,7 +281,7 @@ and do not edit the file for them.
 
 After the render succeeds, offer the review page instead of hand-editing `proposal.md`:
 
-> *"proposal.md is ready at `<run-dir>/proposal.md`. You can edit it directly, or review it in the
+> *"proposal.md is ready: [proposal.md](file:///abs/path/to/run-dir/proposal.md). You can edit it directly, or review it in the
 > browser — I'll open a page that lets you approve / skip / override each row. When you click
 > **Commit decisions**, come back here and I'll continue."*
 
@@ -300,9 +301,10 @@ If they choose the browser:
    `?expand=inc,dec` to open the increase and decrease groups on load (needs-a-decision is always
    open). The page never talks to the network beyond loading its two web fonts.
 
-   Tell the admin: *"Opened the review page. Approve, skip, or override each row, then click
-   Commit decisions — I'm waiting for the file and will read it back to you before anything is
-   applied."*
+   Tell the admin: *"Opened the review page: [review.html](file:///abs/path/to/run-dir/review.html).
+   Approve, skip, or override each row, then click Commit decisions — I'm waiting for the file and
+   will read it back to you before anything is applied."* If `open` fails or is denied, the link
+   is the fallback — the admin clicks it instead.
 
 2. **Wait for the hand-off.** *Commit decisions* downloads one file, `proposal.md`: the input file
    with each row's checkbox (`[x]` approve, `[ ]` skip, `[?]` deferred) and, for an override, the
@@ -425,13 +427,13 @@ readback, and the apply report:
 # 🛡️ Qodo Review Standards
 
 **Outcome:** Exported <total_rules> active rules and classified all <rows> against the rubric, then proposed <rows-in-proposal> severity changes (<proposed> pre-checked · <needs_decision> needing a decision · <held_by_prior_decision> held by earlier decisions). Readback: <readback_text>. Applied <counts.applied> of <rows_to_apply> approved rows — <counts.failed> failed · <counts.deferred> deferred · <counts.pending> pending · <counts.skipped> skipped · <counts.invalid> invalid. Recorded <recorded> skips and the applied decisions in the ledger. Verification and revert arrive in a later version of this skill.
-**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.jsonl, proposal.md, review.html if staged, receipt.md, apply.sh, apply-results.jsonl); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied); ledger ~/.qodo/calibrate/decisions.jsonl
+**Scope:** workspace <workspace_id>; run folder [<run-id>/](file:///abs/path/to/run-dir/) — [proposal.md](file:///abs/path/to/run-dir/proposal.md) · [review.html](file:///abs/path/to/run-dir/review.html) if staged · [receipt.md](file:///abs/path/to/run-dir/receipt.md) · [apply-results.jsonl](file:///abs/path/to/run-dir/apply-results.jsonl) (plus export.json, batches/, rubric-snapshot.yaml, classification.jsonl, apply.sh); rubric [rubric.yaml](file:///abs/path/to/calibrate/rubric.yaml) (created this run | <n> overrides applied); ledger [decisions.jsonl](file:///abs/path/to/calibrate/decisions.jsonl)
 **State:** permission <organization_permission>; apply exit code <apply_exit_code>; current severities before this run: <current_counts.error> error · <current_counts.warning> warning · <current_counts.recommendation> recommendation
 ---
 ```
 
 List every non-applied and invalid row by id and code below the block. If the run stops at
-classification or at the open checklist, report the counts and the proposal path and say the
+classification or at the open checklist, report the counts and the proposal link and say the
 decision is still open. For an empty workspace the Outcome line says the export found 0 active
 rules and there is nothing to calibrate. Do not render the block when the CLI is missing or too
 old, when the user is not logged in, when the admin gate fails, when the catalog check fails after
@@ -491,6 +493,13 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
 - **Classify from the full content, in a fresh context.** Classifiers tag from the whole rule
   text, never from the name alone, never skipping a batch because it is long. The
   orchestrator never loads rule text; it reads status lines.
+- **Hand-off paths are clickable links.** Every file the admin has to open or find —
+  `proposal.md`, `review.html`, `receipt.md`, the run folder, the rubric, the ledger — is
+  presented as a markdown link with the **absolute** path resolved (`$HOME` expanded, never `~`,
+  never `$RUN` or `<run-dir>` left literal): `[proposal.md](file:///Users/jk/.qodo/calibrate/runs/20260903-093907/proposal.md)`.
+  Terminals and editors render `file://` links as clickable; a tilde path or a bare code span is
+  not. Put the plain absolute path in a code block beneath the link only when the admin also
+  needs to paste it into a shell.
 - **Tell the user which outcome actually happened** — active rule vs. pending suggestion,
   matched vs. succeeded count from a bulk call — don't assume success from a 200 response alone.
 - **Documented departure.** The admin's edited checklist plus a confirmed readback of its counts
