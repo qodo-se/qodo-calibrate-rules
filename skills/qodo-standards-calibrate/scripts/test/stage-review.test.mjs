@@ -10,7 +10,7 @@ const STAGE = join(SCRIPTS_DIR, 'stage-review.mjs');
 function fakeRun() {
   const dir = join(tmp(), 'runs', '20260101-000000');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'proposal.md'), '---\nrun_id: 20260101-000000\n---\n\n- [x] 10 · A rule </script> with a tag · warning → recommendation · https://app.qodo.ai/rules/10\n- [ ] 11 · B · error → warning · https://app.qodo.ai/rules/11\n');
+  writeFileSync(join(dir, 'proposal.md'), '---\nrun_id: 20260101-000000\n---\n\n- [x] 10 · A rule </script> with a tag · warning → recommendation · https://app.qodo.ai/rules/10\n- [ ] 11 · B · error → warning · https://app.qodo.ai/rules/11\n- [?] 12 · C · error → warning · https://app.qodo.ai/rules/12\n');
   writeFileSync(join(dir, 'classification.jsonl'), '{"rule_id":10,"tag":"naming","direction":"decrease","current":"warning"}\n');
   writeFileSync(join(dir, 'export.json'), JSON.stringify({ rules: [{ ruleId: 10, content: 'no <!-- comments --> or </SCRIPT> here; $$ $& $1 $` $\' stay literal' }] }));
   return dir;
@@ -42,7 +42,7 @@ test('stageReview writes <run-dir>/review.html from the run files and reports co
   assert.equal(res.status, 'staged');
   assert.equal(res.path, join(dir, 'review.html'));
   assert.equal(res.run_id, '20260101-000000');
-  assert.equal(res.rows, 2);
+  assert.equal(res.rows, 3, 'counts [x], [ ], and [?] rows');
   const out = readFileSync(res.path, 'utf8');
   assert.ok(out.includes('class ReviewApp'), 'the real review.js is inlined');
   assert.ok(!out.includes('fonts.googleapis.com/css2') || true); // fonts stay external with a system fallback

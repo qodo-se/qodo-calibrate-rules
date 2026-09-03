@@ -61,7 +61,7 @@ export function stageReview(runDir, outPath = join(runDir, 'review.html')) {
   const html = need(join(REVIEW_DIR, 'index.html'), 'the skill install is incomplete');
   const moduleSource = need(join(REVIEW_DIR, 'review.js'), 'the skill install is incomplete');
   const runId = (proposal.match(/^run_id:\s*(\S+)/m) || [])[1] || null;
-  const rows = proposal.split('\n').filter((l) => /^- \[( |x|X)\] \d+ · /.test(l)).length;
+  const rows = proposal.split('\n').filter((l) => /^- \[( |x|X|\?)\] \d+ · /.test(l)).length;
   const out = buildReviewHtml({ html, moduleSource, proposal, classification, exportJson });
   writeFileSync(outPath, out);
   return { status: 'staged', path: outPath, run_id: runId, rows, bytes: Buffer.byteLength(out) };
