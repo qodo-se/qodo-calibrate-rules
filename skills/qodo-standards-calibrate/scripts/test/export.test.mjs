@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXPORT, FAKE_QODO, makeRun, pageLog, readJson, run, tmp } from './helpers.mjs';
 
@@ -27,8 +27,15 @@ test('happy export: 230 rules → 3 pages, 6 batches ordered by ruleId, last bat
   assert.equal(exp.run_id, '20260101-000000');
   assert.ok(exp.exported_at);
   const files = readdirSync(join(runDir, 'batches')).sort();
-  assert.equal(files.length, 6);
-  assert.equal(files[5], 'batch-006.json');
+  assert.equal(files.length, 12);
+  assert.equal(files[10], 'batch-006.json');
+  assert.equal(files[11], 'batch-006.txt');
+  // the plain-text view a classifier reads: header line per rule, content verbatim, id trailer
+  const view = readFileSync(join(runDir, 'batches', 'batch-001.txt'), 'utf8');
+  assert.match(view, /^# run 20260101-000000 · batch 1 · 40 rules\n/);
+  assert.match(view, /^=== 7 \| .* \| category=.* \| severity=.* \| guard=auth, authentic$/m);
+  assert.match(view, /^=== 19 \| .* \| guard=-$/m);
+  assert.match(view, /\nIDS=1,2,3,.*,40\n$/);
   const last = readJson(join(runDir, 'batches', 'batch-006.json'));
   assert.equal(last.rules.length, 30);
   const first = readJson(join(runDir, 'batches', 'batch-001.json'));

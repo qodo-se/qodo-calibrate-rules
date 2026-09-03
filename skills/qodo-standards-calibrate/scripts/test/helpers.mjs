@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseReceipt } from '../lib/receipt-lib.mjs';
+import { readClassification, readClassificationLines } from '../lib/proposal-lib.mjs';
 
 export const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 export const SCRIPTS_DIR = join(TEST_DIR, '..');
@@ -43,6 +44,14 @@ export function makeRun(rubricYaml = null) {
   const res = run(RUBRIC, ['--rubric', rubricPath, '--snapshot', join(runDir, 'rubric-snapshot.yaml')]);
   if (res.status !== 0) throw new Error(`rubric setup failed: ${res.stderr}`);
   return { base, runDir, rubricPath, rubric: res.json };
+}
+
+// Effective classification rows (last line per rule) and every appended line, from the run folder.
+export function classificationRows(runDir) {
+  return readClassification(runDir) ?? [];
+}
+export function classificationLines(runDir) {
+  return readClassificationLines(runDir) ?? [];
 }
 
 export function readJson(path) {

@@ -1,24 +1,30 @@
 #!/usr/bin/env node
-// record-batch.mjs — turn the agent's tag decisions for one batch into classification rows.
+// record-batch.mjs — turn the agent's tag (and summary) decisions for one batch into
+// classification rows.
 //
 // Usage:
 //   node record-batch.mjs --run <run-dir> --status
 //   node record-batch.mjs --run <run-dir> --batch N (--tags '<json>' | --tags-file <path>) [--replace]
 //
-// --tags is a JSON object {"<ruleId>": "<tag>"} covering every rule in batches/batch-NNN.json.
-// The script derives proposed severity from <run-dir>/rubric-snapshot.yaml, applies the two
-// vetoes on decreases (keyword guard hit; recommendation-default tag on a Security/Compliance
-// rule), and appends the rows to <run-dir>/classification.json. Each row keeps the rubric's own
-// severity for the tag in `rubric_proposed` — the value a veto took away, and the target the
-// proposal offers for a needs-a-decision row. A batch already present in
-// the file is skipped, which is what makes a re-run resumable; --replace drops that batch's
-// existing rows first so a correction can be re-recorded. Read-only against the workspace.
+// --tags is a JSON object covering every rule in batches/batch-NNN.json. Each value is either
+// the tag alone ("documentation") or {"tag": "documentation", "summary": "<one line>"} — the
+// one-pass form, which records the proposal's display summary at the same time the rule is
+// classified so the rule text is read once. The script derives the proposed severity from
+// <run-dir>/rubric-snapshot.yaml, applies the two vetoes on decreases (keyword guard hit;
+// recommendation-default tag on a Security/Compliance rule), and APPENDS one line per rule to
+// <run-dir>/classification.jsonl in a single write. Readers take the last line per rule, so
+// several recorders (parallel classifier agents on different batches) can append without
+// coordination and --replace is simply another append. Each row keeps the rubric's own severity
+// for the tag in `rubric_proposed` — the value a veto took away. A batch already present is
+// skipped unless --replace is given, which is what makes a re-run resumable. Read-only against
+// the workspace.
 //
 // Exit codes: 0 ok (recorded or skipped), 1 usage / Node too old, 2 invalid input.
 
-import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { compareRuleIds, isTag, parseSnapshot, PRIOR_CATEGORIES, RANK, requireNode20, TAG_DEFAULTS, TAGS, validateSnapshot } from './lib/calibrate-lib.mjs';
+import { classificationPaths, isRendered, mergedSummaries, readClassification, RunError, validateSummary } from './lib/proposal-lib.mjs';
 
 requireNode20();
 
@@ -74,11 +80,13 @@ function listBatches(runDir) {
     .sort((a, b) => a - b);
 }
 
-function readClassification(path) {
-  if (!existsSync(path)) return [];
-  const rows = readJson(path, 'classification file');
-  if (!Array.isArray(rows)) fail(2, `${path} must be a JSON array of rows; fix or remove it before continuing`);
-  return rows;
+function loadRows(runDir) {
+  try {
+    return readClassification(runDir, (w) => process.stderr.write(`record-batch: ${w}\n`)) ?? [];
+  } catch (e) {
+    if (e instanceof RunError) fail(e.code, `${e.message}; fix or remove it before continuing`);
+    throw e;
+  }
 }
 
 function readBatch(runDir, n) {
@@ -107,10 +115,22 @@ function currentCounts(runDir) {
   return { total_rules: rules.length, current_counts: counts };
 }
 
-// Disjoint counts: decrease + increase + unchanged + needs_decision = rows.
-function summarize(rows, allBatches) {
+function readOverrides(runDir) {
+  const path = join(runDir, 'summaries.json');
+  if (!existsSync(path)) return {};
+  try {
+    const o = JSON.parse(readFileSync(path, 'utf8'));
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch { return {}; }
+}
+
+// Disjoint counts: decrease + increase + unchanged + needs_decision = rows. summaries_missing
+// counts the rows that will render in the proposal and still have no summary anywhere.
+function summarize(rows, allBatches, overrides = {}) {
   const done = [...new Set(rows.map((r) => r.batch))].sort((a, b) => a - b);
   const count = (pred) => rows.filter(pred).length;
+  const summaries = mergedSummaries(rows, overrides);
+  const missing = rows.filter((r) => isRendered(r) && !summaries[String(r.rule_id)]).map((r) => r.rule_id);
   return {
     batches_total: allBatches.length,
     batches_done: done,
@@ -120,10 +140,11 @@ function summarize(rows, allBatches) {
     increase: count((r) => r.direction === 'increase'),
     unchanged: count((r) => r.direction === 'none' && !r.needs_decision),
     needs_decision: count((r) => r.needs_decision),
+    summaries_missing: missing.length,
   };
 }
 
-function classify(rule, tag, severities, batch) {
+function classify(rule, tag, summary, severities, batch, recordedAt) {
   const current = String(rule.severity ?? '').toLowerCase();
   const guardHits = Array.isArray(rule.guard_hits) ? rule.guard_hits : [];
   const row = {
@@ -137,7 +158,9 @@ function classify(rule, tag, severities, batch) {
     direction: 'none',
     guard_hits: guardHits,
     needs_decision: false,
+    summary,
     batch,
+    recorded_at: recordedAt,
   };
   if (!Object.hasOwn(RANK, current)) {
     // Unknown current severity: never propose, let the admin decide.
@@ -156,27 +179,39 @@ function classify(rule, tag, severities, batch) {
   return row;
 }
 
+// A value is "tag" or {tag, summary?}. Returns {tag, summary} or a reason string.
+function decision(value) {
+  if (typeof value === 'string') return { tag: value, summary: null };
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (typeof value.tag !== 'string') return 'decision object has no "tag" string';
+    const extra = Object.keys(value).filter((k) => k !== 'tag' && k !== 'summary');
+    if (extra.length) return `decision object has unknown key(s) ${extra.join(', ')} (allowed: tag, summary)`;
+    if (value.summary === undefined || value.summary === null || value.summary === '') return { tag: value.tag, summary: null };
+    const reason = validateSummary(value.summary);
+    if (reason) return `summary ${reason.replace(/^summary /, '')}`;
+    return { tag: value.tag, summary: value.summary.trim() };
+  }
+  return 'decision must be a tag string or {"tag": "...", "summary": "..."}';
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const runDir = resolve(args.run);
-  const classificationPath = join(runDir, 'classification.json');
+  const { jsonl } = classificationPaths(runDir);
   const allBatches = listBatches(runDir);
-  let rows = readClassification(classificationPath);
+  const rows = loadRows(runDir);
+  const overrides = readOverrides(runDir);
 
   if (args.status) {
-    process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'ok', ...currentCounts(runDir), ...summarize(rows, allBatches) })}\n`);
+    process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'ok', classification: jsonl, ...currentCounts(runDir), ...summarize(rows, allBatches, overrides) })}\n`);
     return;
   }
 
   if (!allBatches.includes(args.batch)) fail(2, `batch ${args.batch} does not exist in ${join(runDir, 'batches')} (have ${allBatches.length} batches)`);
-  let replaced = 0;
-  if (rows.some((r) => r.batch === args.batch)) {
-    if (!args.replace) {
-      process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'already_recorded', batch: args.batch, ...currentCounts(runDir), ...summarize(rows, allBatches) })}\n`);
-      return;
-    }
-    replaced = rows.filter((r) => r.batch === args.batch).length;
-    rows = rows.filter((r) => r.batch !== args.batch);
+  const existing = rows.filter((r) => r.batch === args.batch).length;
+  if (existing && !args.replace) {
+    process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'already_recorded', batch: args.batch, ...currentCounts(runDir), ...summarize(rows, allBatches, overrides) })}\n`);
+    return;
   }
 
   const snapshotPath = join(runDir, 'rubric-snapshot.yaml');
@@ -193,38 +228,48 @@ function main() {
   } catch (e) {
     fail(2, `tags are not valid JSON: ${e.message}`);
   }
-  if (!tags || typeof tags !== 'object' || Array.isArray(tags)) fail(2, 'tags must be a JSON object {"<ruleId>": "<tag>"}');
+  if (!tags || typeof tags !== 'object' || Array.isArray(tags)) fail(2, 'tags must be a JSON object {"<ruleId>": "<tag>" | {"tag": "<tag>", "summary": "<one line>"}}');
 
   const issues = [];
+  const decisions = new Map();
   const batchIds = new Set(batchRules.map((r) => String(r.ruleId)));
   for (const id of Object.keys(tags)) {
-    if (!batchIds.has(id)) issues.push(`ruleId ${id} is not in batch ${args.batch}`);
-    else if (!isTag(tags[id])) issues.push(`ruleId ${id}: unknown tag "${tags[id]}" (valid: ${TAGS.join(', ')})`);
+    if (!batchIds.has(id)) { issues.push(`ruleId ${id} is not in batch ${args.batch}`); continue; }
+    const d = decision(tags[id]);
+    if (typeof d === 'string') issues.push(`ruleId ${id}: ${d}`);
+    else if (!isTag(d.tag)) issues.push(`ruleId ${id}: unknown tag "${d.tag}" (valid: ${TAGS.join(', ')})`);
+    else decisions.set(id, d);
   }
   for (const r of batchRules) {
     if (!Object.hasOwn(tags, String(r.ruleId))) issues.push(`ruleId ${r.ruleId} ("${r.name}") has no tag`);
   }
   if (issues.length) fail(2, `batch ${args.batch} not recorded:\n  - ${issues.join('\n  - ')}`);
 
-  const newRows = batchRules.map((r) => classify(r, tags[String(r.ruleId)], effective.severities, args.batch));
-  const merged = [...rows, ...newRows].sort((a, b) => a.batch - b.batch || compareRuleIds(a.rule_id, b.rule_id));
-  const tmp = `${classificationPath}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(merged, null, 1)}\n`);
-  renameSync(tmp, classificationPath);
+  const recordedAt = new Date().toISOString();
+  const newRows = [...batchRules]
+    .sort((a, b) => compareRuleIds(a.ruleId, b.ruleId))
+    .map((r) => {
+      const d = decisions.get(String(r.ruleId));
+      return classify(r, d.tag, d.summary, effective.severities, args.batch, recordedAt);
+    });
+  // One write for the whole batch: concurrent recorders never interleave inside a line.
+  appendFileSync(jsonl, `${newRows.map((r) => JSON.stringify(r)).join('\n')}\n`);
 
-  const batchSummary = summarize(newRows, [args.batch]);
+  const merged = loadRows(runDir);
+  const batchSummary = summarize(newRows, [args.batch], overrides);
   process.stdout.write(`${JSON.stringify({
     run_dir: runDir,
-    status: replaced ? 'replaced' : 'recorded',
+    status: existing ? 'replaced' : 'recorded',
     batch: args.batch,
-    replaced_rows: replaced,
+    replaced_rows: existing,
     batch_rows: batchSummary.rows,
     batch_decrease: batchSummary.decrease,
     batch_increase: batchSummary.increase,
     batch_unchanged: batchSummary.unchanged,
     batch_needs_decision: batchSummary.needs_decision,
+    batch_summaries_missing: batchSummary.summaries_missing,
     ...currentCounts(runDir),
-    ...summarize(merged, allBatches),
+    ...summarize(merged, allBatches, overrides),
   })}\n`);
 }
 

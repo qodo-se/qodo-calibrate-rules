@@ -236,15 +236,82 @@ export function listBatches(runDir) {
     .sort((a, b) => a - b);
 }
 
+// ---------------------------------------------------------------------------------------
+// Classification file
+//
+// classification.jsonl is append-only: one JSON object per line, one line per rule per recording.
+// Several recorders (parallel classifier agents) can append to it without coordination, because
+// a batch is appended as one write and readers take the LAST line per rule_id. --replace is
+// therefore just another append. A legacy classification.json (a JSON array, ≤ 0.4.0) is read
+// first when present so an older run folder still resumes.
+
+export const CLASSIFICATION_FILE = 'classification.jsonl';
+export const LEGACY_CLASSIFICATION_FILE = 'classification.json';
+
+export function classificationPaths(runDir) {
+  return { jsonl: join(runDir, CLASSIFICATION_FILE), legacy: join(runDir, LEGACY_CLASSIFICATION_FILE) };
+}
+
+export function isClassificationRow(row) {
+  return Boolean(row) && typeof row === 'object' && !Array.isArray(row) && row.rule_id !== undefined && row.rule_id !== null;
+}
+
+// Every recorded line in file order (legacy array first), or null when neither file exists.
+export function readClassificationLines(runDir, onWarning = () => {}) {
+  const { jsonl, legacy } = classificationPaths(runDir);
+  if (!existsSync(jsonl) && !existsSync(legacy)) return null;
+  const lines = [];
+  if (existsSync(legacy)) {
+    const rows = readJson(legacy, 'classification file');
+    if (!Array.isArray(rows)) throw new RunError(`${legacy} must be a JSON array of rows`);
+    for (const row of rows) {
+      if (!isClassificationRow(row)) throw new RunError(`${legacy} has an entry that is not a classification row — fix or remove the file and re-record the batches`);
+      lines.push(row);
+    }
+  }
+  if (existsSync(jsonl)) {
+    const text = readFileSync(jsonl, 'utf8');
+    let n = 0;
+    for (const raw of text.split(/\r?\n/)) {
+      n++;
+      if (!raw.trim()) continue;
+      let row;
+      try { row = JSON.parse(raw); } catch { onWarning(`${jsonl}:${n}: skipping unreadable line`); continue; }
+      if (!isClassificationRow(row)) throw new RunError(`${jsonl}:${n} is not a classification row (no rule_id) — fix or remove the line and re-record the batch`);
+      lines.push(row);
+    }
+  }
+  return lines;
+}
+
+// The effective rows: last line per rule_id wins, ordered by batch then numeric rule id.
+export function effectiveRows(lines) {
+  const byId = new Map();
+  for (const row of lines) byId.set(String(row.rule_id), row);
+  return [...byId.values()].sort((a, b) => (a.batch ?? 0) - (b.batch ?? 0) || compareRuleIds(a.rule_id, b.rule_id));
+}
+
+export function readClassification(runDir, onWarning) {
+  const lines = readClassificationLines(runDir, onWarning);
+  return lines === null ? null : effectiveRows(lines);
+}
+
+// The summary shown for a row: summaries.json (the repair/override layer) wins over the summary
+// recorded with the row.
+export function mergedSummaries(rows, overrides) {
+  const out = {};
+  for (const row of rows) {
+    if (typeof row.summary === 'string' && row.summary.trim()) out[String(row.rule_id)] = row.summary;
+  }
+  for (const [id, s] of Object.entries(overrides || {})) out[id] = s;
+  return out;
+}
+
 // Everything the proposal and the readback need from a run folder, validated once.
 export function loadRun(runDir) {
-  const classificationPath = join(runDir, 'classification.json');
-  if (!existsSync(classificationPath)) throw new RunError(`${classificationPath} missing — classify the batches first (record-batch.mjs --status)`);
-  const rows = readJson(classificationPath, 'classification file');
-  if (!Array.isArray(rows)) throw new RunError(`${classificationPath} must be a JSON array of rows`);
-  if (rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) {
-    throw new RunError(`${classificationPath} has an entry that is not a classification row — fix or remove the file and re-record the batches`);
-  }
+  const { jsonl } = classificationPaths(runDir);
+  const rows = readClassification(runDir, (w) => process.stderr.write(`proposal: ${w}\n`));
+  if (rows === null) throw new RunError(`${jsonl} missing — classify the batches first (record-batch.mjs --status)`);
 
   const snapshotPath = join(runDir, 'rubric-snapshot.yaml');
   if (!existsSync(snapshotPath)) throw new RunError(`${snapshotPath} missing — this run has no pinned rubric`);
@@ -263,11 +330,12 @@ export function loadRun(runDir) {
   for (const rule of Array.isArray(exported.rules) ? exported.rules : []) rules.set(String(rule.ruleId), rule);
 
   const summariesPath = join(runDir, 'summaries.json');
-  let summaries = {};
+  let overrides = {};
   if (existsSync(summariesPath)) {
-    summaries = readJson(summariesPath, 'summaries file');
-    if (!summaries || typeof summaries !== 'object' || Array.isArray(summaries)) throw new RunError(`${summariesPath} must be a JSON object {"<ruleId>": "<summary>"}`);
+    overrides = readJson(summariesPath, 'summaries file');
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new RunError(`${summariesPath} must be a JSON object {"<ruleId>": "<summary>"}`);
   }
+  const summaries = mergedSummaries(rows, overrides);
 
   const batches = listBatches(runDir);
   const done = [...new Set(rows.map((r) => r.batch))];
@@ -277,6 +345,7 @@ export function loadRun(runDir) {
     rows,
     rules,
     summaries,
+    summaryOverrides: overrides,
     summariesPath,
     snapshot,
     rubricText,

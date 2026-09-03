@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { RECORD, makeRun, readJson, run, writeBatch } from './helpers.mjs';
+import { spawn } from 'node:child_process';
+import { RECORD, classificationLines, classificationRows, makeRun, readJson, run, writeBatch } from './helpers.mjs';
 
 const RULES = [
   { ruleId: 1, name: 'Docstrings everywhere', category: 'Maintainability', severity: 'recommendation', content: 'docs', guard_hits: [] },
@@ -31,9 +32,9 @@ test('rows derive proposed severity, vetoes, unknown severity, and numeric order
   const res = run(RECORD, ['--run', runDir, '--batch', '1', '--tags', JSON.stringify(TAGS)]);
   assert.equal(res.status, 0, res.stderr);
   assert.equal(res.json.status, 'recorded');
-  const rows = readJson(join(runDir, 'classification.json'));
+  const rows = classificationRows(runDir);
   const by = Object.fromEntries(rows.map((r) => [r.rule_id, r]));
-  assert.deepEqual(Object.keys(by[1]), ['rule_id', 'name', 'category', 'current', 'tag', 'rubric_proposed', 'proposed', 'direction', 'guard_hits', 'needs_decision', 'batch']);
+  assert.deepEqual(Object.keys(by[1]), ['rule_id', 'name', 'category', 'current', 'tag', 'rubric_proposed', 'proposed', 'direction', 'guard_hits', 'needs_decision', 'summary', 'batch', 'recorded_at']);
   // override {documentation: warning} propagates
   assert.equal(by[1].proposed, 'warning'); assert.equal(by[1].direction, 'increase'); assert.equal(by[1].needs_decision, false);
   // rubric_proposed is the snapshot severity for the tag, before any veto; proposed is unchanged
@@ -84,14 +85,17 @@ test('a re-run skips a recorded batch; --replace re-records it', () => {
   const skip = run(RECORD, ['--run', runDir, '--batch', '1', '--tags', '{}']);
   assert.equal(skip.status, 0);
   assert.equal(skip.json.status, 'already_recorded');
-  assert.equal(readJson(join(runDir, 'classification.json')).length, 10);
+  assert.equal(classificationRows(runDir).length, 10);
   const rep = run(RECORD, ['--run', runDir, '--batch', '1', '--replace', '--tags', JSON.stringify({ ...TAGS, 6: 'api-contract' })]);
   assert.equal(rep.status, 0, rep.stderr);
   assert.equal(rep.json.status, 'replaced');
   assert.equal(rep.json.replaced_rows, 10);
-  const rows = readJson(join(runDir, 'classification.json'));
+  const rows = classificationRows(runDir);
   assert.equal(rows.length, 10);
   assert.equal(rows.find((r) => r.rule_id === 6).tag, 'api-contract');
+  // --replace is an append: the file keeps both recordings, readers take the last per rule
+  assert.equal(classificationLines(runDir).length, 20);
+  assert.equal(rep.json.rows, 10);
 });
 
 test('incomplete or invalid tag maps are refused and nothing is written', () => {
@@ -106,7 +110,7 @@ test('incomplete or invalid tag maps are refused and nothing is written', () => 
   const proto = run(RECORD, ['--run', runDir, '--batch', '1', '--tags', JSON.stringify({ ...TAGS, 1: 'constructor' })]);
   assert.equal(proto.status, 2);
   assert.match(proto.stderr, /unknown tag "constructor"/);
-  assert.ok(!existsSync(join(runDir, 'classification.json')));
+  assert.ok(!existsSync(join(runDir, 'classification.jsonl')));
   const nobatch = run(RECORD, ['--run', runDir, '--batch', '9', '--tags', '{}']);
   assert.equal(nobatch.status, 2);
   assert.match(nobatch.stderr, /batch 9 does not exist/);
@@ -122,4 +126,71 @@ test('a corrupt batch file is reported with exit 2', () => {
   const res2 = run(RECORD, ['--run', runDir, '--batch', '2', '--tags', '{"200":"logging"}']);
   assert.equal(res2.status, 2);
   assert.match(res2.stderr, /batch file .* is not valid JSON/);
+});
+
+test('the one-pass form records tag and summary together; a bad summary refuses the batch', () => {
+  const { runDir } = setup();
+  const onePass = Object.fromEntries(Object.entries(TAGS).map(([id, tag]) => [id, { tag, summary: `Rule ${id} in one line` }]));
+  onePass[10] = 'logging'; // the plain string form still works, row by row
+  const res = run(RECORD, ['--run', runDir, '--batch', '1', '--tags', JSON.stringify(onePass)]);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.json.batch_summaries_missing, 0); // rule 10 is unchanged, so it needs none
+  assert.equal(res.json.summaries_missing, 0);
+  const by = Object.fromEntries(classificationRows(runDir).map((r) => [r.rule_id, r]));
+  assert.equal(by[1].summary, 'Rule 1 in one line');
+  assert.equal(by[10].summary, null);
+  const bad = run(RECORD, ['--run', runDir, '--batch', '2', '--tags', JSON.stringify({ 200: { tag: 'logging', summary: 'has a · separator' } })]);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /ruleId 200: summary contains the field separator/);
+  const shape = run(RECORD, ['--run', runDir, '--batch', '2', '--tags', JSON.stringify({ 200: { tag: 'logging', note: 'x' } })]);
+  assert.equal(shape.status, 2);
+  assert.match(shape.stderr, /unknown key\(s\) note/);
+  assert.deepEqual(run(RECORD, ['--run', runDir, '--status']).json.batches_remaining, [2]);
+});
+
+test('--status counts rendered rows that still lack a summary', () => {
+  const { runDir } = setup();
+  run(RECORD, ['--run', runDir, '--batch', '1', '--tags', JSON.stringify(TAGS)]);
+  const s = run(RECORD, ['--run', runDir, '--status']).json;
+  // 1 decrease + 1 increase + 3 needs_decision render; none has a summary yet
+  assert.equal(s.summaries_missing, 5);
+  writeFileSync(join(runDir, 'summaries.json'), JSON.stringify({ 1: 'fixed later', 6: 'also fixed' }));
+  assert.equal(run(RECORD, ['--run', runDir, '--status']).json.summaries_missing, 3);
+});
+
+test('two recorders appending concurrently both land, with no interleaved lines', async () => {
+  const { runDir } = setup();
+  const big = Array.from({ length: 40 }, (_, i) => ({ ruleId: 1000 + i, name: `R${i}`, category: 'Quality', severity: 'warning', content: 'x'.repeat(400), guard_hits: [] }));
+  const big2 = big.map((r) => ({ ...r, ruleId: r.ruleId + 100 }));
+  writeBatch(runDir, 3, big); writeBatch(runDir, 4, big2);
+  const tagsFor = (rules) => JSON.stringify(Object.fromEntries(rules.map((r) => [r.ruleId, { tag: 'documentation', summary: `Summary ${r.ruleId} ${'y'.repeat(100)}` }])));
+  const spawnRecord = (n, tags) => new Promise((done) => {
+    const child = spawn(process.execPath, [RECORD, '--run', runDir, '--batch', String(n), '--tags', tags], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let err = ''; child.stderr.on('data', (d) => { err += d; });
+    child.on('close', (code) => done({ code, err }));
+  });
+  const results = await Promise.all([spawnRecord(3, tagsFor(big)), spawnRecord(4, tagsFor(big2))]);
+  for (const r of results) assert.equal(r.code, 0, r.err);
+  const rows = classificationRows(runDir);
+  assert.equal(rows.length, 80);
+  assert.equal(classificationLines(runDir).length, 80);
+  assert.deepEqual(run(RECORD, ['--run', runDir, '--status']).json.batches_remaining, [1, 2]);
+});
+
+test('a legacy classification.json is still read, and new batches append beside it', () => {
+  const { runDir } = setup();
+  run(RECORD, ['--run', runDir, '--batch', '1', '--tags', JSON.stringify(TAGS)]);
+  const rows = classificationRows(runDir);
+  writeFileSync(join(runDir, 'classification.json'), JSON.stringify(rows.map(({ summary, recorded_at, ...rest }) => rest)));
+  rmSync(join(runDir, 'classification.jsonl'));
+  const status = run(RECORD, ['--run', runDir, '--status']).json;
+  assert.deepEqual(status.batches_done, [1]);
+  const res = run(RECORD, ['--run', runDir, '--batch', '2', '--tags', '{"200":"logging"}']);
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.json.rows, 11);
+  assert.deepEqual(res.json.batches_remaining, []);
+  // a re-recorded legacy batch is overridden line by line
+  const rep = run(RECORD, ['--run', runDir, '--batch', '1', '--replace', '--tags', JSON.stringify({ ...TAGS, 1: 'naming' })]);
+  assert.equal(rep.status, 0, rep.stderr);
+  assert.equal(classificationRows(runDir).find((r) => r.rule_id === 1).tag, 'naming');
 });

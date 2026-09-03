@@ -6,10 +6,12 @@
 //   node proposal.mjs --run <run-dir> (--record-summaries '<json>' | --summaries-file <path>)
 //   node proposal.mjs --run <run-dir> --render --workspace-id <id> [--replace]
 //
-// --summaries-needed lists the rules that will appear in the proposal and still lack a summary
-// (rule_id, name, and the full content to write it from). --record-summaries validates a chunk
-// and merges it into <run-dir>/summaries.json atomically; an invalid summary refuses the whole
-// chunk and records nothing. --render writes <run-dir>/proposal.md, refusing on an incomplete
+// Summaries normally arrive with the classification (record-batch.mjs, one pass over the rule
+// text). --summaries-needed is the repair path: it lists the rules that will appear in the
+// proposal and still lack a summary (rule_id, name, and the full content to write it from), 10 at
+// a time unless --limit says otherwise. --record-summaries validates a chunk and merges it into
+// <run-dir>/summaries.json atomically (that file overrides a summary recorded with the row); an
+// invalid summary refuses the whole chunk and records nothing. --render writes <run-dir>/proposal.md, refusing on an incomplete
 // classification, a missing summary, or an existing proposal.md without --replace. Rules the
 // admin already decided (decisions.jsonl) are held out of the proposal and counted in its footer.
 // Read-only against the workspace.
@@ -20,9 +22,11 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { compareRuleIds, requireNode20 } from './lib/calibrate-lib.mjs';
 import { isHeld, latestByRule, ledgerPath, readLedger } from './lib/ledger-lib.mjs';
-import { buildSections, hasContent, hasSummary, isRendered, loadRun, renderProposal, ruleUrl, RunError, targetFor, validateSummary } from './lib/proposal-lib.mjs';
+import { buildSections, hasContent, hasSummary, isRendered, loadRun, mergedSummaries, renderProposal, ruleUrl, RunError, targetFor, validateSummary } from './lib/proposal-lib.mjs';
 
 requireNode20();
+
+const DEFAULT_LIMIT = 10;
 
 function fail(code, message) {
   process.stderr.write(`proposal: ${message}\n`);
@@ -30,7 +34,7 @@ function fail(code, message) {
 }
 
 function parseArgs(argv) {
-  const args = { run: null, summariesNeeded: false, limit: null, recordSummaries: null, summariesFile: null, render: false, workspaceId: null, replace: false };
+  const args = { run: null, summariesNeeded: false, limit: DEFAULT_LIMIT, recordSummaries: null, summariesFile: null, render: false, workspaceId: null, replace: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => {
@@ -54,7 +58,7 @@ function parseArgs(argv) {
   if (args.recordSummaries !== null && args.summariesFile !== null) fail(1, 'pass either --record-summaries or --summaries-file, not both');
   const modes = [args.summariesNeeded, Boolean(args.recordSummaries || args.summariesFile), args.render].filter(Boolean);
   if (modes.length !== 1) fail(1, 'pass exactly one of --summaries-needed, --record-summaries/--summaries-file, --render');
-  if (args.limit !== null && (!Number.isInteger(args.limit) || args.limit < 1)) fail(1, '--limit N (N >= 1) must be a positive integer');
+  if (!Number.isInteger(args.limit) || args.limit < 1) fail(1, '--limit N (N >= 1) must be a positive integer');
   if (args.render && !args.workspaceId) fail(1, '--render needs --workspace-id <id> (from qodo read whoami)');
   return args;
 }
@@ -101,7 +105,7 @@ function main() {
       .sort((a, b) => compareRuleIds(a.rule_id, b.rule_id));
     const withContent = needed.filter((r) => hasContent(run.rules.get(String(r.rule_id))));
     const missingContent = needed.filter((r) => !hasContent(run.rules.get(String(r.rule_id)))).map((r) => r.rule_id);
-    const slice = args.limit ? withContent.slice(0, args.limit) : withContent;
+    const slice = withContent.slice(0, args.limit);
     process.stdout.write(`${JSON.stringify({
       run_dir: runDir,
       status: 'ok',
@@ -135,17 +139,18 @@ function main() {
       }
     }
     if (issues.length) fail(2, `no summaries recorded:\n  - ${issues.join('\n  - ')}`);
-    const merged = { ...run.summaries };
+    const merged = { ...run.summaryOverrides };
     for (const [id, summary] of Object.entries(chunk)) merged[id] = summary.trim();
     const ordered = {};
     for (const id of Object.keys(merged).sort(compareRuleIds)) ordered[id] = merged[id];
     writeAtomic(run.summariesPath, `${JSON.stringify(ordered, null, 1)}\n`);
-    const stillNeeded = rows.filter((r) => !hasSummary(ordered, r.rule_id)).length;
+    const effective = mergedSummaries(run.rows, ordered);
+    const stillNeeded = rows.filter((r) => !hasSummary(effective, r.rule_id)).length;
     process.stdout.write(`${JSON.stringify({
       run_dir: runDir,
       status: 'recorded',
       recorded: Object.keys(chunk).length,
-      summaries_total: Object.keys(ordered).length,
+      summaries_total: Object.keys(effective).length,
       rendered_rows: rows.length,
       still_needed: stillNeeded,
     })}\n`);

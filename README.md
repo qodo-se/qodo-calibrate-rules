@@ -1,11 +1,12 @@
 # qodo-standards-calibrate
 
-Version 0.4.0 of this coding-agent skill turns a workspace-wide severity review into one
+Version 0.5.0 of this coding-agent skill turns a workspace-wide severity review into one
 reviewable, resumable batch. It checks the CLI version, authentication, workspace admin
 permission, and the tool catalog; creates an editable rubric file on first run; exports every
 active Qodo Review Standards rule into a local run folder; classifies each rule against a fixed
-rubric (one taxonomy tag and a proposed severity per rule, with keyword-guard and
-platform-category vetoes on decreases); renders a diff-only proposal checklist grouped by
+rubric (one taxonomy tag, a one-line summary, and a proposed severity per rule, with keyword-guard
+and platform-category vetoes on decreases) in parallel classifier subagents so the orchestrating
+agent never loads rule text; renders a diff-only proposal checklist grouped by
 direction and tag; reads the admin's edits back as approve, skip, or override with invalid values
 reported by row; and, after an explicit confirmation, applies the approved rows as a single
 generated script, writing a per-row receipt and remembering every decision so a later run does
@@ -19,11 +20,13 @@ is not this skill's job — use `qodo-manage-standards` for that.
 1. **Preflight** — CLI version, login, admin permission, tool catalog.
 2. **Rubric** — `rubric.yaml` on first run, pinned into the run as a snapshot.
 3. **Export** — every active rule into `export.json` plus 40-rule batches.
-4. **Classify** — one taxonomy tag per rule; the rubric gives the proposed severity, and a
-   keyword guard or a Security/Compliance category turns a proposed decrease into a row that
-   needs a decision instead.
-5. **Summarize** — a one-line, agent-written summary of each rule that will appear in the
-   proposal, written from the rule's full text.
+4. **Classify** — one taxonomy tag and a one-line summary per rule, decided in a single pass over
+   the rule's full text by classifier subagents (4–5 batches each, in parallel, each in a fresh
+   context); the rubric gives the proposed severity, and a keyword guard or a Security/Compliance
+   category turns a proposed decrease into a row that needs a decision instead. The orchestrating
+   agent reads only the scripts' status lines.
+5. **Summaries repair path** — any rendered row still without a summary is listed with its text,
+   ten at a time, and recorded separately.
 6. **Propose** — `proposal.md`: a markdown checklist, one row per changing rule with its id,
    name, summary, `current → proposed`, any guard terms, and the portal link. Rows the rubric
    proposes start checked; guard or category conflicts start unchecked. Unchanged rules never
@@ -88,10 +91,12 @@ repository or the skill install directory.
   drifts later is re-proposed. "reconsider rule <id>" releases one.
 - `runs/<run-id>/` (`run-id` = `YYYYMMDD-HHMMSS` UTC) — one folder per run: `export.json` (every
   active rule as returned by the CLI), `batches/batch-NNN.json` (40 rules each, with precomputed
-  guard hits), `rubric-snapshot.yaml` (the effective rubric this run used),
-  `classification.json` (one row per rule: tag, current and proposed severity, direction, guard
-  hits, and whether the row needs an admin decision), `summaries.json` (the one-line summary per
-  rule), `proposal.md` (the checklist the admin edits), `receipt.md` (that checklist plus a status
+  guard hits) beside `batch-NNN.txt` (the same rules as plain text, what a classifier reads) and
+  the classifiers' `batch-NNN.decisions.json`, `rubric-snapshot.yaml` (the effective rubric this
+  run used), `classification.jsonl` (append-only, one line per rule per recording: tag, summary,
+  current and proposed severity, direction, guard hits, and whether the row needs an admin
+  decision; the last line per rule wins, so parallel classifiers never conflict), `summaries.json`
+  (repair-path summaries, overriding the row's), `proposal.md` (the checklist the admin edits), `receipt.md` (that checklist plus a status
   token per row and the apply's exit code), `apply.sh` (the generated loop that was executed, kept
   for audit), and `apply-results.jsonl` (every attempt, appended). Re-running in the same folder
   resumes at the first unclassified batch or the first unapplied row; `proposal.md` is never

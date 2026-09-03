@@ -21,8 +21,10 @@ or read by hand.
 - `<url>` is the rule's `url` from the export, or `https://app.qodo.ai/rules/<ruleId>`.
 - `<summary>` is agent-written from the rule's full `content`: one sentence, at most 160
   characters, no newline, no ` · `, no `→`, and no `…`/`...`. It is display-only and never an
-  input to classification. Summaries live in `<run-dir>/summaries.json` (`{rule_id: summary}`)
-  and are recorded in chunks, so a long workspace survives an interrupted session.
+  input to classification. A summary is normally recorded with the rule's classification row
+  (`record-batch.mjs`, one pass over the rule text) and lives in `<run-dir>/classification.jsonl`;
+  `<run-dir>/summaries.json` (`{rule_id: summary}`) is the repair layer, recorded in chunks by
+  `proposal.mjs --record-summaries`, and it overrides the row's summary when both exist.
 
 Parsing is right-anchored: only the checkbox, the rule id, and the target are decisions, and the
 name/summary middle is opaque. An edited or odd name never shifts a field.
@@ -119,3 +121,28 @@ invalid rows, and this line:
 - `ledger.mjs --show [<id> …]` prints the effective (latest) entry per rule.
 - A blank or corrupt line is skipped with a warning: a half-written line never locks the admin
   out of their own decisions.
+
+## Classification file
+
+`<run-dir>/classification.jsonl` is append-only: one JSON object per line, one line per rule per
+recording, with `rule_id`, `name`, `category`, `current`, `tag`, `rubric_proposed`, `proposed`,
+`direction`, `guard_hits`, `needs_decision`, `summary`, `batch`, and `recorded_at`. A batch is
+appended in a single write, and every reader takes the **last** line per `rule_id`, so parallel
+classifiers recording different batches never conflict and `--replace` is simply another append.
+A blank or unreadable line is skipped with a warning; a line without a `rule_id` is refused. A
+legacy `classification.json` (a JSON array, from 0.4.0 and earlier) is still read first when it
+is present, so an older run folder resumes.
+
+## Error handling — propose and approve
+
+- **Summary chunk refused** (`proposal.mjs` exit 2) — the message names each id and what is wrong
+  (separator, arrow, truncation mark, length); nothing was recorded. Rewrite those summaries and
+  record the chunk again.
+- **Render refused** (`proposal.mjs --render` exit 2) — an incomplete classification (finish the
+  named batches), a missing summary (record the listed ids through the repair path), or an
+  existing `proposal.md` (ask the admin before `--replace`). Nothing was written; never work
+  around it by writing the file yourself.
+- **Readback refused** (`approve.mjs` exit 2) — no `proposal.md` yet, or its frontmatter `run_id`
+  belongs to another run. Point at the right run folder; never edit the frontmatter to match.
+- **Invalid or removed rows in the readback** (exit 0) — not a failure: report them by line number
+  with the reason, say they are excluded, and let the admin fix the file and read it back again.

@@ -388,7 +388,7 @@ test('a later run holds an applied override and re-proposes a rule whose severit
   const nextId = '20260202-000000';
   const nextDir = join(ctx.calibrate, 'runs', nextId);
   cpSync(ctx.runDir, nextDir, { recursive: true });
-  for (const stale of ['proposal.md', 'receipt.md', 'apply.sh', 'apply-results.jsonl', 'summaries.json', 'classification.json']) {
+  for (const stale of ['proposal.md', 'receipt.md', 'apply.sh', 'apply-results.jsonl', 'summaries.json', 'classification.json', 'classification.jsonl']) {
     if (existsSync(join(nextDir, stale))) rmSync(join(nextDir, stale));
   }
   const atApplied = CALIB_RULES.map((r) => {

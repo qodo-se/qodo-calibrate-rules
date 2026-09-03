@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { contentHash } from '../lib/ledger-lib.mjs';
 import { parseFrontmatter, parseProposal, parseRow, renderRow, validateSummary } from '../lib/proposal-lib.mjs';
 import {
   APPROVE, CALIB_DECISIONS, CALIB_PRECHECKED, CALIB_RULES, CALIB_TAGS, CALIB_UNCHANGED,
-  PROPOSAL, makeCalibrated, readJson, readText, run, summariesFor,
+  PROPOSAL, RECORD, classificationRows, makeCalibrated, readJson, readText, run, summariesFor,
 } from './helpers.mjs';
 
 const RENDERED = [...CALIB_PRECHECKED, ...CALIB_DECISIONS];
@@ -285,11 +285,11 @@ test('validateSummary enforces the display contract', () => {
 test('rows recorded before rubric_proposed existed take the target from the run snapshot', () => {
   const ctx = setup();
   summarize(ctx);
-  // a 0.2.0 classification.json: no rubric_proposed on any row
-  const path = join(ctx.runDir, 'classification.json');
-  const legacy = readJson(path).map(({ rubric_proposed, ...rest }) => rest);
+  // a 0.2.0 classification.json (JSON array, no rubric_proposed on any row) instead of the jsonl
+  const legacy = classificationRows(ctx.runDir).map(({ rubric_proposed, summary, recorded_at, ...rest }) => rest);
   assert.ok(!Object.hasOwn(legacy[0], 'rubric_proposed'));
-  writeFileSync(path, JSON.stringify(legacy, null, 1));
+  writeFileSync(join(ctx.runDir, 'classification.json'), JSON.stringify(legacy, null, 1));
+  rmSync(join(ctx.runDir, 'classification.jsonl'));
   const res = render(ctx);
   assert.equal(res.status, 0, res.stderr);
   const { rows } = parseProposal(readText(join(ctx.runDir, 'proposal.md')));
@@ -360,7 +360,7 @@ test('a rendered row whose exported rule has no content is named, not silently e
 });
 
 test('a run folder missing one of its files is refused by both scripts with a named message', () => {
-  for (const file of ['classification.json', 'export.json', 'rubric-snapshot.yaml']) {
+  for (const file of ['classification.jsonl', 'export.json', 'rubric-snapshot.yaml']) {
     const ctx = setup();
     summarize(ctx);
     rmSync(join(ctx.runDir, file));
@@ -383,10 +383,17 @@ test('a malformed run file is a plain refusal, not a crash', () => {
   assert.match(asArray.stderr, /must be a JSON object with a rules array/);
   const ctx2 = setup();
   summarize(ctx2);
-  writeFileSync(join(ctx2.runDir, 'classification.json'), JSON.stringify([{ rule_id: 1, direction: 'none' }, 'nope']));
+  writeFileSync(join(ctx2.runDir, 'classification.jsonl'), `${JSON.stringify({ rule_id: 1, direction: 'none' })}\n"nope"\n`);
   const badRow = render(ctx2);
   assert.equal(badRow.status, 2);
   assert.match(badRow.stderr, /not a classification row/);
+  // an unreadable line is skipped with a warning, the way the ledger does it
+  const ctx4 = setup();
+  summarize(ctx4);
+  appendFileSync(join(ctx4.runDir, 'classification.jsonl'), 'not json\n');
+  const warned = render(ctx4);
+  assert.equal(warned.status, 0, warned.stderr);
+  assert.match(warned.stderr, /classification\.jsonl:\d+: skipping unreadable line/);
   const ctx3 = setup();
   writeFileSync(join(ctx3.runDir, 'summaries.json'), '[]');
   const badSummaries = run(PROPOSAL, ['--run', ctx3.runDir, '--summaries-needed'], { env: ctx3.env });
@@ -405,4 +412,32 @@ test('parseFrontmatter says what is wrong and coerces only the count keys', () =
   assert.equal(ok.frontmatter.rubric, 'version: 1\n');
   assert.equal(parseFrontmatter('# just a heading\n- [x] 1 · a · b · error → warning · u\n').error, 'missing');
   assert.equal(parseFrontmatter('---\nrun_id: 20260101-000000\nrubric: |\n  version: 1\n').error, 'unterminated');
+});
+
+test('summaries recorded with the classification render without summaries.json; the file overrides them', () => {
+  const onePass = Object.fromEntries(Object.entries(CALIB_TAGS).map(([id, tag]) => [id, { tag, summary: `One-pass summary for ${id}` }]));
+  const ctx = setup({ tags: onePass });
+  const needed = run(PROPOSAL, ['--run', ctx.runDir, '--summaries-needed'], { env: ctx.env });
+  assert.equal(needed.json.needed_total, 0);
+  const res = render(ctx);
+  assert.equal(res.status, 0, res.stderr);
+  const text = readText(join(ctx.runDir, 'proposal.md'));
+  assert.match(text, / 101 · Public functions must have docstrings · One-pass summary for 101 · /);
+  assert.ok(!existsSync(join(ctx.runDir, 'summaries.json')));
+  // the repair layer wins over the row's summary
+  const fix = run(PROPOSAL, ['--run', ctx.runDir, '--record-summaries', JSON.stringify({ 101: 'Corrected by hand' })], { env: ctx.env });
+  assert.equal(fix.status, 0, fix.stderr);
+  assert.equal(fix.json.summaries_total, 9);
+  assert.equal(render(ctx, ['--replace']).status, 0);
+  assert.match(readText(join(ctx.runDir, 'proposal.md')), / 101 · Public functions must have docstrings · Corrected by hand · /);
+});
+
+test('--summaries-needed returns 10 rows by default', () => {
+  const many = Array.from({ length: 14 }, (_, i) => ({ ruleId: 300 + i, name: `Doc ${i}`, category: 'Quality', severity: 'error', content: `content ${i}`, guard_hits: [] }));
+  const ctx = makeCalibrated({ rules: many, tags: Object.fromEntries(many.map((r) => [r.ruleId, 'documentation'])) });
+  const res = run(PROPOSAL, ['--run', ctx.runDir, '--summaries-needed'], { env: ctx.env });
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.json.needed_total, 14);
+  assert.equal(res.json.returned, 10);
+  assert.equal(run(PROPOSAL, ['--run', ctx.runDir, '--summaries-needed', '--limit', '0'], { env: ctx.env }).status, 1);
 });

@@ -64,7 +64,7 @@ decision, in file order:
 
 ```sh
 #!/bin/sh
-# qodo-standards-calibrate 0.4.0 · run 20260902-190914 · 5 rows · generated 2026-09-02T20:10:00Z · do not edit
+# qodo-standards-calibrate 0.5.0 · run 20260902-190914 · 5 rows · generated 2026-09-02T20:10:00Z · do not edit
 # One Bash invocation applies the whole batch: sh apply.sh. Never run the rows by hand.
 set -u
 ABORTED=0
@@ -185,3 +185,27 @@ target that was written and a `sha256:` hash of the rule's exported content. Ded
 **never** recorded: nothing was decided into the workspace, so they must be proposed again.
 Because an `approve` is held only while the rule still sits at the approved severity, recording
 the target (not the old value) is what makes the next run hold the row.
+
+## Error handling — apply
+
+- **Apply refused** (`apply.mjs` exit 2) — no `proposal.md` or `receipt.md`; a frontmatter
+  `run_id` that names another run; a `--target` that is not a severity; a rule with no row in this
+  receipt; or a receipt row that disagrees with `apply.sh` (unchecked, already `· skipped`, or a
+  different target) — that last one means the script is **stale**: regenerate it and run the new
+  one. Point at the right run folder; never edit the frontmatter or the script to match.
+- **Apply ended in 1 or 2** (`sh apply.sh`) — the failure came from the final `--write-receipt`,
+  so **no report was printed**: `1` is Node older than 20, `2` is a missing receipt or one from
+  another run. Fix the cause, then run `apply.mjs --run <run-dir> --write-receipt` for the report.
+- **Apply aborted** (`sh apply.sh` exit 3 with `aborted: true`) — an auth, permission,
+  missing-tool, or bad-argument error. Rows before it are applied, that row and every later one
+  are still pending, and no further call was made. Fix the cause (`qodo login`, admin permission,
+  `qodo tools --refresh`), then resume by regenerating. Do not retry the row by hand.
+- **Rows not applied** (`sh apply.sh` exit 3) — read `non_applied` from the JSON and name every
+  row by id and code. Regenerating re-sends `failed` and `deferred` rows along with the pending
+  ones, so one resume is the right response; a row that fails a **second** time with the same code
+  is a real rejection — report it and let the admin decide. Never run its `--row` by hand.
+- **`applied` without confirmation** — `--row` warns `response carried no severity` and the result
+  line reads `severity_verified: false`. The write is recorded as applied (exit 0 and a JSON object
+  with no error is success) but unconfirmed; say so, and note that verify will settle it.
+- **`response_mismatch`** — the update returned a different severity: the row is not applied, the
+  workspace may have been edited concurrently, and retrying is not the answer.

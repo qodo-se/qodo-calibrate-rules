@@ -6,8 +6,9 @@
 //
 // Requires <run-dir>/rubric-snapshot.yaml (written by rubric.mjs); its guard_terms drive the
 // precomputed guard hits. Writes <run-dir>/export.json (raw rules + totalCount, exported_at,
-// run_id) and <run-dir>/batches/batch-NNN.json (40 rules each: ruleId, name, category,
-// severity, content, guard_hits[]). Read-only against the workspace: the only Qodo command it
+// run_id), <run-dir>/batches/batch-NNN.json (40 rules each: ruleId, name, category,
+// severity, content, guard_hits[]) and, beside each, batch-NNN.txt — the same rules as plain
+// text, which is what a classifier reads (no JSON escaping, ~10% fewer tokens, nothing to dump). Read-only against the workspace: the only Qodo command it
 // runs is the catalog's read command for rules-list. Node >= 20, built-ins only.
 //
 // Exit codes: 0 exported (or already exported), 1 usage / Node too old, 2 export failed.
@@ -139,8 +140,23 @@ function fetchAll(launcher, readArgs) {
   return { rules, totalCount, pages, pageSize };
 }
 
-function batchFiles(dir) {
-  return existsSync(dir) ? readdirSync(dir).filter((f) => /^batch-\d{3}\.json$/.test(f)) : [];
+// The plain-text view of a batch: a header line per rule, then its content verbatim.
+export function renderBatchText(runId, batchNo, rules) {
+  const out = [`# run ${runId} · batch ${batchNo} · ${rules.length} rules`, ''];
+  for (const r of rules) {
+    const guard = r.guard_hits && r.guard_hits.length ? r.guard_hits.join(', ') : '-';
+    out.push(`=== ${r.ruleId} | ${r.name} | category=${r.category} | severity=${r.severity} | guard=${guard}`);
+    out.push(String(r.content ?? '(no content)').replace(/\s+$/, ''));
+    out.push('');
+  }
+  out.push(`IDS=${rules.map((r) => r.ruleId).join(',')}`);
+  return `${out.join('\n')}\n`;
+}
+
+// The batch files proper are the .json ones; `withViews` adds their .txt siblings (for cleanup).
+function batchFiles(dir, withViews = false) {
+  const re = withViews ? /^batch-\d{3}\.(json|txt)$/ : /^batch-\d{3}\.json$/;
+  return existsSync(dir) ? readdirSync(dir).filter((f) => re.test(f)) : [];
 }
 
 function main() {
@@ -179,7 +195,7 @@ function main() {
   // Batches are ordered by ruleId so the same workspace yields the same batch files.
   const ordered = [...rules].sort((a, b) => compareRuleIds(a.ruleId, b.ruleId));
   mkdirSync(batchesDir, { recursive: true });
-  for (const stale of batchFiles(batchesDir)) unlinkSync(join(batchesDir, stale));
+  for (const stale of batchFiles(batchesDir, true)) unlinkSync(join(batchesDir, stale));
   const exportedAt = new Date().toISOString();
   let guardHitRules = 0;
   let batchCount = 0;
@@ -192,6 +208,7 @@ function main() {
     });
     const name = `batch-${String(batchCount).padStart(3, '0')}.json`;
     writeFileSync(join(batchesDir, name), `${JSON.stringify({ run_id: runId, batch: batchCount, rules: slice }, null, 1)}\n`);
+    writeFileSync(join(batchesDir, name.replace(/\.json$/, '.txt')), renderBatchText(runId, batchCount, slice));
   }
 
   const tmp = `${exportPath}.tmp`;
