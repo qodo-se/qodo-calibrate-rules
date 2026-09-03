@@ -92,8 +92,7 @@ repository or the skill install directory.
   drifts later is re-proposed. "reconsider rule <id>" releases one.
 - `runs/<run-id>/` (`run-id` = `YYYYMMDD-HHMMSS` UTC) — one folder per run: `export.json` (every
   active rule as returned by the CLI), `batches/batch-NNN.json` (40 rules each, with precomputed
-  guard hits) beside `batch-NNN.txt` (the same rules as plain text, what a classifier reads) and
-  the classifiers' `batch-NNN.decisions.json`, `rubric-snapshot.yaml` (the effective rubric this
+  guard hits) beside `batch-NNN.txt` (the same rules as plain text, what a classifier reads), `rubric-snapshot.yaml` (the effective rubric this
   run used), `classification.jsonl` (append-only, one line per rule per recording: tag,
   current and proposed severity, direction, guard hits, and whether the row needs an admin
   decision; the last line per rule wins, so parallel classifiers never conflict), `proposal.md` (the checklist the admin edits), `receipt.md` (that checklist plus a status

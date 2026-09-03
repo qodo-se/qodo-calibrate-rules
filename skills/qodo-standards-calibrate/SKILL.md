@@ -226,17 +226,21 @@ read batch files.** Delegate:
    `batches_done` and `batches_remaining` from `<run-dir>/classification.jsonl`. A re-run in the
    same run folder resumes at the remaining batches.
 2. Split `batches_remaining` into groups of **1–2 batches** and spawn one classifier subagent per
-   group, all in parallel (a classifier that carries five batches accumulates all of them in its
-   context and costs about twice as much per batch as one that carries one), using the prompt in `<skill-dir>/references/classifier-prompt.md` with
-   its placeholders filled (skill dir, run dir, the group's batch numbers). Use a mid-tier model
-   for the classifiers (Sonnet-class): the rubric is a fixed lookup with a short "common calls"
-   table, and a stronger model adds cost, not accuracy. Each classifier reads `rubric.md` once,
-   then for each of its batches reads `batch-NNN.txt` in full, writes a decisions file
-   `<run-dir>/batches/batch-NNN.decisions.json` (`{"<ruleId>": "<tag>"}` for **every** rule in
-   the batch), and records it:
-   `node <skill-dir>/scripts/record-batch.mjs --run <run-dir> --batch N --tags-file <that file>`.
-   The script refuses the batch (exit 2) if any rule is missing, any id is not in the batch, or
-   any tag is not in the taxonomy; the classifier fixes the file and records again — nothing was
+   group, using the prompt in `<skill-dir>/references/classifier-prompt.md` with its placeholders
+   filled (skill dir, run dir, the group's batch numbers). **Issue every spawn in one message** —
+   all the Agent calls as parallel tool calls of a single turn, not one spawn per turn: the prompt
+   is the same apart from the batch numbers, and spawning one at a time makes you re-reason the
+   whole plan before each call (measured at ~11k output tokens per spawn, ~200k per run). Small
+   groups matter for the same reason on the classifier's side: a classifier that carries five
+   batches accumulates all of them in its context and costs about twice as much per batch as one
+   that carries one. Use a mid-tier model for the classifiers (Sonnet-class): the rubric is a
+   fixed lookup with a short "common calls" table, and a stronger model adds cost, not accuracy.
+   Each classifier reads `rubric.md` once, then for each of its batches reads `batch-NNN.txt` in
+   full and records its tags in one command, inline:
+   `node <skill-dir>/scripts/record-batch.mjs --run <run-dir> --batch N --tags '{"<ruleId>":"<tag>", …}'`
+   (three tool calls per batch, no intermediate file; `--tags-file` exists for PowerShell). The
+   script refuses the batch (exit 2) if any rule is missing, any id is not in the batch, or any
+   tag is not in the taxonomy; the classifier fixes the map and records again — nothing was
    written. Recording appends to `classification.jsonl` in one write and readers take the last
    line per rule, so parallel classifiers on different batches never conflict, and `--replace`
    re-records a batch by appending. The classifier's whole reply to you is the script's final
@@ -479,7 +483,7 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
   category; never `rules-bulk`, `rules-set-state`, `rules-set-scope`, or `rules-create`. Every
   phase before Apply is read-only. Under `${QODO_HOME:-$HOME/.qodo}/calibrate/` it writes
   `rubric.yaml` (first run only), `decisions.jsonl` (the ledger), and `runs/<run-id>/`
-  (`export.json`, `batches/` including the classifiers' `*.decisions.json`, `rubric-snapshot.yaml`,
+  (`export.json`, `batches/`, `rubric-snapshot.yaml`,
   `classification.jsonl`, `proposal.md`, `review.html` (the staged browser page), `receipt.md`,
   `apply.sh`, `apply-results.jsonl`) — plus the CLI's own catalog cache. Write nothing into the skill install
   directory or a repository.
