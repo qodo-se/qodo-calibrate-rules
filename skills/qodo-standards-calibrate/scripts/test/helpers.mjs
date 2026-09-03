@@ -133,8 +133,6 @@ export function receiptStatuses(runDir) {
 // approve.test.mjs uses. Returns the context plus the readback JSON.
 export function confirmed({ edits = [], rules = CALIB_RULES, tags = CALIB_TAGS, rubricYaml } = {}) {
   const ctx = makeCalibrated(rubricYaml === undefined ? { rules, tags } : { rules, tags, rubricYaml });
-  const s = run(PROPOSAL, ['--run', ctx.runDir, '--record-summaries', JSON.stringify(summariesFor(rules.map((r) => r.ruleId)))], { env: ctx.env });
-  if (s.status !== 0) throw new Error(`record summaries failed: ${s.stderr}`);
   const r = run(PROPOSAL, ['--run', ctx.runDir, '--render', '--workspace-id', 'ws-1'], { env: ctx.env });
   if (r.status !== 0) throw new Error(`render failed: ${r.stderr}`);
   ctx.proposal = join(ctx.runDir, 'proposal.md');
@@ -197,6 +195,4 @@ export const CALIB_PRECHECKED = [99, 101, 102, 103, 104];
 export const CALIB_DECISIONS = [105, 106];
 export const CALIB_UNCHANGED = [107, 108];
 
-export function summariesFor(ids) {
-  return Object.fromEntries(ids.map((id) => [String(id), `Summary for rule ${id} in one line`]));
-}
+

@@ -11,7 +11,7 @@
 // before a row parses, which is what splitStatus / stripStatuses are for.
 //
 // Stripping is right-anchored too: only the unbroken run of tokens at the end of the line is
-// removed, so a rule whose name or agent-written summary happens to be exactly `deferred` or
+// removed, so a rule whose name happens to be exactly `deferred` or
 // `applied` survives intact.
 
 import { readFileSync } from 'node:fs';

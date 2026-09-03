@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { contentHash, isHeld, latestByRule, readLedger } from '../lib/ledger-lib.mjs';
 import {
   CALIB_DECISIONS, CALIB_PRECHECKED, CALIB_RULES, CALIB_TAGS,
-  LEDGER, PROPOSAL, ledgerLines, makeCalibrated, readText, run, summariesFor,
+  LEDGER, PROPOSAL, ledgerLines, makeCalibrated, readText, run,
 } from './helpers.mjs';
 
 const RENDERED = [...CALIB_PRECHECKED, ...CALIB_DECISIONS];
@@ -21,8 +21,6 @@ function entry(ruleId, decision, severity, { content = null, run_id = '20251201-
 function proposed(entries = []) {
   const ctx = makeCalibrated({ rules: CALIB_RULES, tags: CALIB_TAGS });
   if (entries.length) writeFileSync(ctx.ledger, `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`);
-  const s = run(PROPOSAL, ['--run', ctx.runDir, '--record-summaries', JSON.stringify(summariesFor(RENDERED))], { env: ctx.env });
-  assert.equal(s.status, 0, s.stderr);
   return ctx;
 }
 

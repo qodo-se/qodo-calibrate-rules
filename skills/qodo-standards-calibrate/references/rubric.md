@@ -73,7 +73,7 @@ is embedded verbatim in every proposal and receipt.
 ## Tagging: common calls
 
 One tag per rule, chosen from the rule's **full content** together with its name and platform
-category — never from the name alone and never from the proposal's one-line summary. When two
+category — never from the name alone. When two
 tags fit, choose the one with the higher default severity ("never log tokens" is
 `secrets-handling`, not `logging`; "validate request bodies against the schema" is
 `security-control`, not `api-contract`).

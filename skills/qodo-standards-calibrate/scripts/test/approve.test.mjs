@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { contentHash } from '../lib/ledger-lib.mjs';
 import {
   APPROVE, CALIB_DECISIONS, CALIB_PRECHECKED, CALIB_RULES, CALIB_TAGS, LEDGER,
-  PROPOSAL, ledgerLines, makeCalibrated, proposalRows, readText, run, summariesFor,
+  PROPOSAL, ledgerLines, makeCalibrated, proposalRows, readText, run,
 } from './helpers.mjs';
 
 const RENDERED = [...CALIB_PRECHECKED, ...CALIB_DECISIONS];
@@ -13,8 +13,6 @@ const RENDERED = [...CALIB_PRECHECKED, ...CALIB_DECISIONS];
 // A run with proposal.md rendered from the fixture batch.
 function proposed() {
   const ctx = makeCalibrated({ rules: CALIB_RULES, tags: CALIB_TAGS });
-  const s = run(PROPOSAL, ['--run', ctx.runDir, '--record-summaries', JSON.stringify(summariesFor(RENDERED))], { env: ctx.env });
-  assert.equal(s.status, 0, s.stderr);
   const r = run(PROPOSAL, ['--run', ctx.runDir, '--render', '--workspace-id', 'ws-1'], { env: ctx.env });
   assert.equal(r.status, 0, r.stderr);
   ctx.proposal = join(ctx.runDir, 'proposal.md');
@@ -254,8 +252,6 @@ test('a row this run did not propose is invalid, whether unchanged, held, or inv
     content_hash: contentHash(CALIB_RULES.find((r) => r.ruleId === 101).content),
     run_id: '20251201-000000', decided_at: '2025-12-01T00:00:00.000Z',
   })}\n`);
-  const s = run(PROPOSAL, ['--run', ctx.runDir, '--record-summaries', JSON.stringify(summariesFor(RENDERED))], { env: ctx.env });
-  assert.equal(s.status, 0, s.stderr);
   const r = run(PROPOSAL, ['--run', ctx.runDir, '--render', '--workspace-id', 'ws-1'], { env: ctx.env });
   assert.equal(r.json.held_by_prior_decision, 1);
   ctx.proposal = join(ctx.runDir, 'proposal.md');
@@ -278,7 +274,6 @@ test('a rule at an unknown severity renders, reads back, and can be approved', (
     { ruleId: 502, name: 'Plain decrease', category: 'Maintainability', severity: 'error', content: 'Docstrings on public functions.', guard_hits: [] },
   ];
   const ctx = makeCalibrated({ rules, tags: { 501: 'api-contract', 502: 'documentation' } });
-  assert.equal(run(PROPOSAL, ['--run', ctx.runDir, '--record-summaries', JSON.stringify(summariesFor([501, 502]))], { env: ctx.env }).status, 0);
   const r = run(PROPOSAL, ['--run', ctx.runDir, '--render', '--workspace-id', 'ws-1'], { env: ctx.env });
   assert.equal(r.status, 0, r.stderr);
   ctx.proposal = join(ctx.runDir, 'proposal.md');

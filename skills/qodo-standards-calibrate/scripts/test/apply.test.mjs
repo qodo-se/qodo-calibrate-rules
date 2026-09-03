@@ -8,7 +8,7 @@ import {
   APPLY, APPROVE, CALIB_DECISIONS, CALIB_PRECHECKED, CALIB_RULES, CALIB_TAGS, FAKE_QODO,
   LEDGER, PROPOSAL, RECORD,
   applyResults, confirmed, ledgerLines, readText, receiptStatuses, run, runScript,
-  summariesFor, updateLog, writeBatch, writeExport,
+  updateLog, writeBatch, writeExport,
 } from './helpers.mjs';
 
 // The backoff override only takes effect with CALIBRATE_TEST_MODE, so a stray env var cannot
@@ -388,7 +388,7 @@ test('a later run holds an applied override and re-proposes a rule whose severit
   const nextId = '20260202-000000';
   const nextDir = join(ctx.calibrate, 'runs', nextId);
   cpSync(ctx.runDir, nextDir, { recursive: true });
-  for (const stale of ['proposal.md', 'receipt.md', 'apply.sh', 'apply-results.jsonl', 'summaries.json', 'classification.json', 'classification.jsonl']) {
+  for (const stale of ['proposal.md', 'receipt.md', 'apply.sh', 'apply-results.jsonl', 'classification.json', 'classification.jsonl']) {
     if (existsSync(join(nextDir, stale))) rmSync(join(nextDir, stale));
   }
   const atApplied = CALIB_RULES.map((r) => {
@@ -399,8 +399,6 @@ test('a later run holds an applied override and re-proposes a rule whose severit
   writeBatch(nextDir, 1, atApplied);
   const reclassified = run(RECORD, ['--run', nextDir, '--batch', '1', '--tags', JSON.stringify(CALIB_TAGS)], { env: ctx.env });
   assert.equal(reclassified.status, 0, reclassified.stderr);
-  const s2 = run(PROPOSAL, ['--run', nextDir, '--record-summaries', JSON.stringify(summariesFor(CALIB_RULES.map((r) => r.ruleId)))], { env: ctx.env });
-  assert.equal(s2.status, 0, s2.stderr);
   const rendered = run(PROPOSAL, ['--run', nextDir, '--render', '--workspace-id', 'ws-1'], { env: ctx.env });
   assert.equal(rendered.status, 0, rendered.stderr);
 

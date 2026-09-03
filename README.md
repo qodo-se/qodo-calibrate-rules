@@ -4,7 +4,7 @@ Version 0.5.0 of this coding-agent skill turns a workspace-wide severity review 
 reviewable, resumable batch. It checks the CLI version, authentication, workspace admin
 permission, and the tool catalog; creates an editable rubric file on first run; exports every
 active Qodo Review Standards rule into a local run folder; classifies each rule against a fixed
-rubric (one taxonomy tag, a one-line summary, and a proposed severity per rule, with keyword-guard
+rubric (one taxonomy tag and a proposed severity per rule, with keyword-guard
 and platform-category vetoes on decreases) in parallel classifier subagents so the orchestrating
 agent never loads rule text; renders a diff-only proposal checklist grouped by
 direction and tag; reads the admin's edits back as approve, skip, or override with invalid values
@@ -20,32 +20,30 @@ is not this skill's job — use `qodo-manage-standards` for that.
 1. **Preflight** — CLI version, login, admin permission, tool catalog.
 2. **Rubric** — `rubric.yaml` on first run, pinned into the run as a snapshot.
 3. **Export** — every active rule into `export.json` plus 40-rule batches.
-4. **Classify** — one taxonomy tag and a one-line summary per rule, decided in a single pass over
-   the rule's full text by classifier subagents (4–5 batches each, in parallel, each in a fresh
+4. **Classify** — one taxonomy tag per rule, decided from the rule's full text by classifier
+   subagents (1–2 batches each, in parallel, each in a fresh
    context); the rubric gives the proposed severity, and a keyword guard or a Security/Compliance
    category turns a proposed decrease into a row that needs a decision instead. The orchestrating
    agent reads only the scripts' status lines.
-5. **Summaries repair path** — any rendered row still without a summary is listed with its text,
-   ten at a time, and recorded separately.
-6. **Propose** — `proposal.md`: a markdown checklist, one row per changing rule with its id,
-   name, summary, `current → proposed`, any guard terms, and the portal link. Rows the rubric
+5. **Propose** — `proposal.md`: a markdown checklist, one row per changing rule with its id,
+   name, `current → proposed`, any guard terms, and the portal link. Rows the rubric
    proposes start checked; guard or category conflicts start unchecked. Unchanged rules never
    appear, and rules the admin already decided are held out and counted in the footer.
-7. **Approve** — the admin edits the file in any editor (uncheck to skip, edit the value after
+6. **Approve** — the admin edits the file in any editor (uncheck to skip, edit the value after
    the arrow to override) and says when they are done. The skill reads it back — counts,
    invalid values by row, deleted rows — and asks for confirmation before writing anything. The
    rules they unchecked go into the ledger at this point (and again when the loop is generated,
    so a missed step cannot lose them).
-8. **Apply** — the confirmed decisions become `apply.sh`, one `qodo rules update` per approved
+7. **Apply** — the confirmed decisions become `apply.sh`, one `qodo rules update` per approved
    row, run as a single shell invocation. Each row lands in `receipt.md` as `applied`,
    `failed(<code>)`, `deferred`, or `skipped`. An auth or permission error stops the loop before
    the next row; a rate limit (`MT-RATE-LIMITED`) or an upstream outage (`MT-UPSTREAM-DOWN`)
    retries the same row with exponential backoff five times and then marks it `deferred` for a
    later run. The run exits non-zero unless every approved row applied, and names each row that
    did not by id and code.
-9. **Resume** — an interrupted apply is re-generated and re-run from the receipt: rows already
+8. **Resume** — an interrupted apply is re-generated and re-run from the receipt: rows already
    `applied` are never attempted again, so no rule is written twice.
-10. **Remember** — the skipped rules, and the rows that actually applied, go into
+9. **Remember** — the skipped rules, and the rows that actually applied, go into
     `decisions.jsonl`. Saying "reconsider rule 815412" releases one so the next proposal includes
     it again.
 
@@ -93,10 +91,9 @@ repository or the skill install directory.
   active rule as returned by the CLI), `batches/batch-NNN.json` (40 rules each, with precomputed
   guard hits) beside `batch-NNN.txt` (the same rules as plain text, what a classifier reads) and
   the classifiers' `batch-NNN.decisions.json`, `rubric-snapshot.yaml` (the effective rubric this
-  run used), `classification.jsonl` (append-only, one line per rule per recording: tag, summary,
+  run used), `classification.jsonl` (append-only, one line per rule per recording: tag,
   current and proposed severity, direction, guard hits, and whether the row needs an admin
-  decision; the last line per rule wins, so parallel classifiers never conflict), `summaries.json`
-  (repair-path summaries, overriding the row's), `proposal.md` (the checklist the admin edits), `receipt.md` (that checklist plus a status
+  decision; the last line per rule wins, so parallel classifiers never conflict), `proposal.md` (the checklist the admin edits), `receipt.md` (that checklist plus a status
   token per row and the apply's exit code), `apply.sh` (the generated loop that was executed, kept
   for audit), and `apply-results.jsonl` (every attempt, appended). Re-running in the same folder
   resumes at the first unclassified batch or the first unapplied row; `proposal.md` is never
@@ -107,7 +104,7 @@ rules are documented in `skills/qodo-standards-calibrate/references/receipt-form
 
 **Windows.** `apply.sh` is POSIX `sh`. Run it under **Git Bash** or **WSL**; there is no
 PowerShell equivalent. The rest of the workflow runs in PowerShell, but pass JSON arguments
-through `--tags-file` / `--summaries-file` rather than inline single quotes.
+through `--tags-file` rather than inline single quotes.
 
 ## License
 

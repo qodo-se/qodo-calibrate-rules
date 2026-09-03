@@ -22,8 +22,8 @@ is the workspace-wide counterpart to `qodo-manage-standards`: changing one rule'
 the X rule an error") belongs there; re-levelling many rules at once belongs here. Reading and
 applying rules while coding belongs to `qodo-get-rules`.
 
-**This version implements preflight, rubric, export, classification (tag and summary in one
-pass, delegated to classifier subagents), the proposal, the approval readback, and apply with a
+**This version implements preflight, rubric, export, classification (delegated to classifier
+subagents), the proposal, the approval readback, and apply with a
 resumable receipt.** **Apply is the only write, and it writes only `severity`.** Verify and revert
 arrive later.
 
@@ -89,11 +89,9 @@ ls "${QODO_HOME:-$HOME/.qodo}/calibrate/runs/"                                  
 RUN="${QODO_HOME:-$HOME/.qodo}/calibrate/runs/$(date -u +%Y%m%d-%H%M%S)"            # new run id (skip when resuming)
 node <skill-dir>/scripts/rubric.mjs --snapshot "$RUN/rubric-snapshot.yaml"          # new run only; creates rubric.yaml on first run
 node <skill-dir>/scripts/export-rules.mjs --out "$RUN" --qodo <launcher>            # writes export.json + batches/batch-NNN.{json,txt}
-node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --status                       # which batches remain, summaries still missing
+node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --status                       # which batches remain
 #   classifier subagents (references/classifier-prompt.md) each run, per batch:
-node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --batch N --tags-file <path>   # {"<ruleId>":{"tag":"<tag>","summary":"<one line>"}}
-node <skill-dir>/scripts/proposal.mjs --run "$RUN" --summaries-needed                # repair path only: rows still missing a summary
-node <skill-dir>/scripts/proposal.mjs --run "$RUN" --summaries-file <path>           # repair path only: {"<ruleId>":"<one line>"}
+node <skill-dir>/scripts/record-batch.mjs --run "$RUN" --batch N --tags-file <path>   # {"<ruleId>":"<tag>", ...}
 node <skill-dir>/scripts/proposal.mjs --run "$RUN" --render --workspace-id <workspace_id>   # writes proposal.md
 node <skill-dir>/scripts/approve.mjs --run "$RUN" --readback                        # counts + invalid rows; writes nothing
 node <skill-dir>/scripts/approve.mjs --run "$RUN" --record-skips                    # only after the admin says yes
@@ -105,8 +103,7 @@ node <skill-dir>/scripts/ledger.mjs --reconsider <ruleId>                       
 
 **Windows.** PowerShell run-id line:
 `$RUN = Join-Path $qodoHome "calibrate/runs/$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))"`.
-Always pass JSON through `--tags-file` / `--summaries-file`; single-quoted JSON does not survive
-PowerShell quoting. `apply.sh` is POSIX `sh`: run it under Git Bash or WSL.
+Always pass JSON through `--tags-file`; single-quoted JSON does not survive PowerShell quoting. `apply.sh` is POSIX `sh`: run it under Git Bash or WSL.
 
 **`qodo: command not found`?** That's usually PATH, not a missing install: GUI-launched agents run
 shells with a minimal PATH. On POSIX, retry `"${QODO_HOME:-$HOME/.qodo}/bin/qodo"`. In Windows
@@ -221,25 +218,24 @@ empty it stops and tells you to remove `export.json` to re-export — ask the us
 ## Classify
 
 Classification is judgment, batch by batch, from the rule's **full content** with its name and
-category; the arithmetic is the script's. In this phase each rule gets exactly one taxonomy tag
-**and** its one-line display summary in the same pass, so the rule text is read once. **You do
-not read batch files.** Delegate:
+category; the arithmetic is the script's. Each rule gets exactly one taxonomy tag. **You do not
+read batch files.** Delegate:
 
 1. Run `node <skill-dir>/scripts/record-batch.mjs --run <run-dir> --status`. It lists
-   `batches_done` and `batches_remaining` from `<run-dir>/classification.jsonl` plus
-   `summaries_missing`. A re-run in the same run folder resumes at the remaining batches.
-2. Split `batches_remaining` into groups of **4–5 batches** and spawn one classifier subagent per
-   group, all in parallel, using the prompt in `<skill-dir>/references/classifier-prompt.md` with
+   `batches_done` and `batches_remaining` from `<run-dir>/classification.jsonl`. A re-run in the
+   same run folder resumes at the remaining batches.
+2. Split `batches_remaining` into groups of **1–2 batches** and spawn one classifier subagent per
+   group, all in parallel (a classifier that carries five batches accumulates all of them in its
+   context and costs about twice as much per batch as one that carries one), using the prompt in `<skill-dir>/references/classifier-prompt.md` with
    its placeholders filled (skill dir, run dir, the group's batch numbers). Use a mid-tier model
    for the classifiers (Sonnet-class): the rubric is a fixed lookup with a short "common calls"
    table, and a stronger model adds cost, not accuracy. Each classifier reads `rubric.md` once,
    then for each of its batches reads `batch-NNN.txt` in full, writes a decisions file
-   `<run-dir>/batches/batch-NNN.decisions.json` (`{"<ruleId>": {"tag": "<tag>", "summary":
-   "<one line>"}}` for **every** rule in the batch), and records it:
+   `<run-dir>/batches/batch-NNN.decisions.json` (`{"<ruleId>": "<tag>"}` for **every** rule in
+   the batch), and records it:
    `node <skill-dir>/scripts/record-batch.mjs --run <run-dir> --batch N --tags-file <that file>`.
-   The script refuses the batch (exit 2) if any rule is missing, any id is not in the batch, any
-   tag is not in the taxonomy, or a summary breaks the display contract (over 160 characters, a
-   newline, ` · `, `→`, or `…`); the classifier fixes the file and records again — nothing was
+   The script refuses the batch (exit 2) if any rule is missing, any id is not in the batch, or
+   any tag is not in the taxonomy; the classifier fixes the file and records again — nothing was
    written. Recording appends to `classification.jsonl` in one write and readers take the last
    line per rule, so parallel classifiers on different batches never conflict, and `--replace`
    re-records a batch by appending. The classifier's whole reply to you is the script's final
@@ -249,18 +245,10 @@ not read batch files.** Delegate:
    session will be long.
 4. When every classifier has reported, run `--status` once more: `decrease`, `increase`,
    `unchanged`, and `needs_decision` are disjoint and sum to `rows`; `batches_remaining` must be
-   empty and `summaries_missing` should be 0. The script derives `proposed` from the snapshot's
+   empty. The script derives `proposed` from the snapshot's
    severity for the tag; a guard hit or a `Security`/`Compliance` category vetoes a **decrease**
    into a `needs_decision` row (increases are never vetoed).
 
-**Summary repair path.** If `summaries_missing` is not 0 (a classifier used the bare-tag form, or
-a summary was rejected and never re-recorded), run `node <skill-dir>/scripts/proposal.mjs --run
-<run-dir> --summaries-needed` — it lists at most 10 rules (`--limit N` to change) with their
-content — write one sentence per rule (what the rule requires, at most 160 characters, one line,
-no ` · `, `→`, or `…`), and record them with `--summaries-file <path>` (or `--record-summaries
-'<json>'`). Repeat until `needed_total` is 0. Never classify from a summary and never paste a
-truncated slice of the content as one. A row under `missing_content` has no rule text in
-`export.json` — say so rather than inventing a summary.
 
 ## Propose
 
@@ -268,7 +256,8 @@ truncated slice of the content as one. A row under `missing_content` has no rule
 node <skill-dir>/scripts/proposal.mjs --run <run-dir> --render --workspace-id <workspace_id>
 ```
 
-This writes `<run-dir>/proposal.md`: the diff-only checklist grouped by direction × tag, every
+This writes `<run-dir>/proposal.md`: the diff-only checklist (rule id, name, `current → target`,
+guard terms, portal link) grouped by direction × tag, every
 rubric-proposed row pre-checked, every needs-a-decision row unchecked, the run's rubric snapshot in
 the frontmatter, and a footer counting the rules held by a prior decision. The grammar, section
 wording, frontmatter, and this phase's error handling are in
@@ -276,8 +265,7 @@ wording, frontmatter, and this phase's error handling are in
 hand-write or hand-edit a row. Take `<workspace_id>` from `whoami`.
 
 It refuses with exit 2 and writes nothing when the classification is incomplete (it names the
-remaining batches), a rendered row has no summary (it lists the ids — use the repair path), or
-`proposal.md` already exists. `--replace` overwrites it — ask the admin first, because their edits
+remaining batches) or `proposal.md` already exists. `--replace` overwrites it — ask the admin first, because their edits
 are discarded.
 
 Then hand the file to the admin: the path, and that a checked row is approved, unchecking skips it,
@@ -366,7 +354,7 @@ readback, and the apply report:
 # 🛡️ Qodo Review Standards
 
 **Outcome:** Exported <total_rules> active rules and classified all <rows> against the rubric, then proposed <rows-in-proposal> severity changes (<proposed> pre-checked · <needs_decision> needing a decision · <held_by_prior_decision> held by earlier decisions). Readback: <readback_text>. Applied <counts.applied> of <rows_to_apply> approved rows — <counts.failed> failed · <counts.deferred> deferred · <counts.pending> pending · <counts.skipped> skipped · <counts.invalid> invalid. Recorded <recorded> skips and the applied decisions in the ledger. Verification and revert arrive in a later version of this skill.
-**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.jsonl, summaries.json, proposal.md, receipt.md, apply.sh, apply-results.jsonl); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied); ledger ~/.qodo/calibrate/decisions.jsonl
+**Scope:** workspace <workspace_id>; run folder ~/.qodo/calibrate/runs/<run-id>/ (export.json, batches/, rubric-snapshot.yaml, classification.jsonl, proposal.md, receipt.md, apply.sh, apply-results.jsonl); rubric ~/.qodo/calibrate/rubric.yaml (created this run | <n> overrides applied); ledger ~/.qodo/calibrate/decisions.jsonl
 **State:** permission <organization_permission>; apply exit code <apply_exit_code>; current severities before this run: <current_counts.error> error · <current_counts.warning> warning · <current_counts.recommendation> recommendation
 ---
 ```
@@ -406,8 +394,8 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
 - **Rate limited (`MT-RATE-LIMITED`) or upstream down (`MT-UPSTREAM-DOWN`)** — export waits 5 s
   and retries the page once; apply retries the row with backoff and then marks it `deferred`. For
   any other command, wait and retry by hand once; if still failing, report it and stop.
-- **Batch refused** (`record-batch.mjs` exit 2) — the message lists every missing rule, invalid
-  tag, or bad summary; the classifier completes the decisions file and records the batch again.
+- **Batch refused** (`record-batch.mjs` exit 2) — the message lists every missing rule or invalid
+  tag; the classifier completes the decisions file and records the batch again.
 - **A classifier subagent fails or returns without recording** — check `--status`; the batches it
   owned are still in `batches_remaining`. Spawn a fresh classifier for exactly those batches. Never
   read the batch yourself to "finish it quickly" unless no subagent facility exists.
@@ -419,7 +407,7 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
   phase before Apply is read-only. Under `${QODO_HOME:-$HOME/.qodo}/calibrate/` it writes
   `rubric.yaml` (first run only), `decisions.jsonl` (the ledger), and `runs/<run-id>/`
   (`export.json`, `batches/` including the classifiers' `*.decisions.json`, `rubric-snapshot.yaml`,
-  `classification.jsonl`, `summaries.json`, `proposal.md`, `receipt.md`, `apply.sh`,
+  `classification.jsonl`, `proposal.md`, `receipt.md`, `apply.sh`,
   `apply-results.jsonl`) — plus the CLI's own catalog cache. Write nothing into the skill install
   directory or a repository.
 - **Nothing is written before the admin's explicit yes.** The readback writes nothing, and no
@@ -430,7 +418,7 @@ Preflight, rubric, export, and classification stops are below. Propose/approve s
 - **Never fabricate a rule id, scope, or example.** Resolve or ask; an empty result from `list`
   is a valid outcome, not an error.
 - **Classify from the full content, in a fresh context.** Classifiers tag from the whole rule
-  text, never from a name or a summary, never skipping a batch because it is long. The
+  text, never from the name alone, never skipping a batch because it is long. The
   orchestrator never loads rule text; it reads status lines.
 - **Tell the user which outcome actually happened** — active rule vs. pending suggestion,
   matched vs. succeeded count from a bulk call — don't assume success from a 200 response alone.

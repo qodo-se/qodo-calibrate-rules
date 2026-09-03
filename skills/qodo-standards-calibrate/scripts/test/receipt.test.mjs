@@ -207,7 +207,7 @@ test('renderApplyScript carries a non-default command path through to --row', ()
 });
 
 test('a row whose own text reads like a token is left untouched', () => {
-  // Stripping is right-anchored, so a name or summary that is exactly a token word survives.
+  // Stripping is right-anchored, so a name that is exactly a token word survives.
   for (const word of ['applied', 'deferred', 'skipped', 'reverted', 'verified']) {
     const row = `- [x] 77 · A rule named ${word} · ${word} · warning → error · https://app.qodo.ai/rules/77`;
     const { row: stripped, statuses } = splitStatus(row);

@@ -8,7 +8,7 @@ or read by hand.
 ## Row grammar
 
 ```
-- [x|space] <rule_id> · <name> · <summary> · <current> → <target> · [guard: <terms> ·] <url>
+- [x|space] <rule_id> · <name> · <current> → <target> · [guard: <terms> ·] <url>
 ```
 
 - The fields are separated by ` · ` (space, U+00B7, space). ` → ` separates current from target.
@@ -19,15 +19,9 @@ or read by hand.
 - `guard: <terms>` appears only when the rule matched the keyword guard. Multiple hits are
   comma-joined (`guard: auth, personal data`).
 - `<url>` is the rule's `url` from the export, or `https://app.qodo.ai/rules/<ruleId>`.
-- `<summary>` is agent-written from the rule's full `content`: one sentence, at most 160
-  characters, no newline, no ` · `, no `→`, and no `…`/`...`. It is display-only and never an
-  input to classification. A summary is normally recorded with the rule's classification row
-  (`record-batch.mjs`, one pass over the rule text) and lives in `<run-dir>/classification.jsonl`;
-  `<run-dir>/summaries.json` (`{rule_id: summary}`) is the repair layer, recorded in chunks by
-  `proposal.mjs --record-summaries`, and it overrides the row's summary when both exist.
 
 Parsing is right-anchored: only the checkbox, the rule id, and the target are decisions, and the
-name/summary middle is opaque. An edited or odd name never shifts a field.
+name in the middle is opaque. An edited or odd name never shifts a field.
 
 ## Sections
 
@@ -126,7 +120,7 @@ invalid rows, and this line:
 
 `<run-dir>/classification.jsonl` is append-only: one JSON object per line, one line per rule per
 recording, with `rule_id`, `name`, `category`, `current`, `tag`, `rubric_proposed`, `proposed`,
-`direction`, `guard_hits`, `needs_decision`, `summary`, `batch`, and `recorded_at`. A batch is
+`direction`, `guard_hits`, `needs_decision`, `batch`, and `recorded_at`. A batch is
 appended in a single write, and every reader takes the **last** line per `rule_id`, so parallel
 classifiers recording different batches never conflict and `--replace` is simply another append.
 A blank or unreadable line is skipped with a warning; a line without a `rule_id` is refused. A
@@ -135,12 +129,8 @@ is present, so an older run folder resumes.
 
 ## Error handling — propose and approve
 
-- **Summary chunk refused** (`proposal.mjs` exit 2) — the message names each id and what is wrong
-  (separator, arrow, truncation mark, length); nothing was recorded. Rewrite those summaries and
-  record the chunk again.
 - **Render refused** (`proposal.mjs --render` exit 2) — an incomplete classification (finish the
-  named batches), a missing summary (record the listed ids through the repair path), or an
-  existing `proposal.md` (ask the admin before `--replace`). Nothing was written; never work
+  named batches) or an existing `proposal.md` (ask the admin before `--replace`). Nothing was written; never work
   around it by writing the file yourself.
 - **Readback refused** (`approve.mjs` exit 2) — no `proposal.md` yet, or its frontmatter `run_id`
   belongs to another run. Point at the right run folder; never edit the frontmatter to match.

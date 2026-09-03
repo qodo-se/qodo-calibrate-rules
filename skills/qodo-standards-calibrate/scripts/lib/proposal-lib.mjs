@@ -1,11 +1,11 @@
-// proposal-lib.mjs — the proposal row grammar as code: render it, parse it back, group it into
-// sections, and validate the agent-written summaries. Node built-ins only.
+// proposal-lib.mjs — the proposal row grammar as code: render it, parse it back, and group it
+// into sections. Node built-ins only.
 //
 // Row grammar (references/proposal-format.md is the human-readable copy):
 //
-//   - [x] <rule_id> · <name> · <summary> · <current> → <target> · [guard: <terms> ·] <url>
+//   - [x] <rule_id> · <name> · <current> → <target> · [guard: <terms> ·] <url>
 //
-// Only the checkbox, the rule id, and the target are decisions. The name/summary middle is
+// Only the checkbox, the rule id, and the target are decisions. The name in the middle is
 // opaque, which is why parsing is right-anchored: an edited or odd name never shifts a field.
 // Current is opaque too, so a rule sitting at a severity this skill does not know ("critical")
 // renders and parses; the reader compares it against the classification row instead.
@@ -15,7 +15,6 @@ import { basename, join } from 'node:path';
 import { compareRuleIds, parseSnapshot, SEVERITIES, TAGS, validateSnapshot } from './calibrate-lib.mjs';
 
 export const TITLE = '# Qodo Standards Calibration — proposal';
-export const SUMMARY_MAX = 160;
 
 // Both severities are \S+ on purpose: an edited "critical" target parses and is reported as an
 // invalid override rather than a mangled row, and a rule whose current severity is not one of
@@ -30,29 +29,9 @@ export class RunError extends Error {
   }
 }
 
-// ---------------------------------------------------------------------------------------
-// Summaries
-
-export function hasSummary(summaries, ruleId) {
-  const s = summaries?.[String(ruleId)];
-  return typeof s === 'string' && s.trim().length > 0;
-}
-
-// The exported rule's raw content is what a summary is written from and what the ledger hashes.
+// The exported rule's raw content is what the ledger hashes.
 export function hasContent(rule) {
   return Boolean(rule) && typeof rule.content === 'string';
-}
-
-export function validateSummary(summary) {
-  if (typeof summary !== 'string') return 'summary must be a string';
-  if (/[\r\n]/.test(summary)) return 'summary contains a newline';
-  const s = summary.trim();
-  if (!s) return 'summary is empty';
-  if (s.length > SUMMARY_MAX) return `summary is ${s.length} characters (max ${SUMMARY_MAX})`;
-  if (s.includes(' · ')) return 'summary contains the field separator " · "';
-  if (s.includes('→')) return 'summary contains "→"';
-  if (s.includes('…') || s.includes('...')) return 'summary contains a truncation mark';
-  return null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -63,14 +42,14 @@ export function ruleUrl(rule, ruleId) {
   return url || `https://app.qodo.ai/rules/${ruleId}`;
 }
 
-// A row is one line: a newline anywhere in the name or summary collapses to a single space.
+// A row is one line: a newline anywhere in the name collapses to a single space.
 export function oneLine(value) {
   return String(value ?? '').replace(/\s*\r?\n\s*/g, ' ');
 }
 
 export function renderRow(row) {
   const guard = Array.isArray(row.guard_hits) && row.guard_hits.length ? ` · guard: ${row.guard_hits.join(', ')}` : '';
-  return `- [${row.checked ? 'x' : ' '}] ${row.rule_id} · ${oneLine(row.name)} · ${oneLine(row.summary)} · ${row.current} → ${row.target}${guard} · ${row.url}`;
+  return `- [${row.checked ? 'x' : ' '}] ${row.rule_id} · ${oneLine(row.name)} · ${row.current} → ${row.target}${guard} · ${row.url}`;
 }
 
 // Sections: one per (direction, tag) pair that has rows — decreases first, then increases,
@@ -296,17 +275,6 @@ export function readClassification(runDir, onWarning) {
   return lines === null ? null : effectiveRows(lines);
 }
 
-// The summary shown for a row: summaries.json (the repair/override layer) wins over the summary
-// recorded with the row.
-export function mergedSummaries(rows, overrides) {
-  const out = {};
-  for (const row of rows) {
-    if (typeof row.summary === 'string' && row.summary.trim()) out[String(row.rule_id)] = row.summary;
-  }
-  for (const [id, s] of Object.entries(overrides || {})) out[id] = s;
-  return out;
-}
-
 // Everything the proposal and the readback need from a run folder, validated once.
 export function loadRun(runDir) {
   const { jsonl } = classificationPaths(runDir);
@@ -329,13 +297,6 @@ export function loadRun(runDir) {
   const rules = new Map();
   for (const rule of Array.isArray(exported.rules) ? exported.rules : []) rules.set(String(rule.ruleId), rule);
 
-  const summariesPath = join(runDir, 'summaries.json');
-  let overrides = {};
-  if (existsSync(summariesPath)) {
-    overrides = readJson(summariesPath, 'summaries file');
-    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new RunError(`${summariesPath} must be a JSON object {"<ruleId>": "<summary>"}`);
-  }
-  const summaries = mergedSummaries(rows, overrides);
 
   const batches = listBatches(runDir);
   const done = [...new Set(rows.map((r) => r.batch))];
@@ -344,9 +305,6 @@ export function loadRun(runDir) {
     runId: basename(runDir),
     rows,
     rules,
-    summaries,
-    summaryOverrides: overrides,
-    summariesPath,
     snapshot,
     rubricText,
     batches,

@@ -1,15 +1,12 @@
 #!/usr/bin/env node
-// record-batch.mjs — turn the agent's tag (and summary) decisions for one batch into
-// classification rows.
+// record-batch.mjs — turn the agent's tag decisions for one batch into classification rows.
 //
 // Usage:
 //   node record-batch.mjs --run <run-dir> --status
 //   node record-batch.mjs --run <run-dir> --batch N (--tags '<json>' | --tags-file <path>) [--replace]
 //
-// --tags is a JSON object covering every rule in batches/batch-NNN.json. Each value is either
-// the tag alone ("documentation") or {"tag": "documentation", "summary": "<one line>"} — the
-// one-pass form, which records the proposal's display summary at the same time the rule is
-// classified so the rule text is read once. The script derives the proposed severity from
+// --tags is a JSON object {"<ruleId>": "<tag>"} covering every rule in batches/batch-NNN.json.
+// The script derives the proposed severity from
 // <run-dir>/rubric-snapshot.yaml, applies the two vetoes on decreases (keyword guard hit;
 // recommendation-default tag on a Security/Compliance rule), and APPENDS one line per rule to
 // <run-dir>/classification.jsonl in a single write. Readers take the last line per rule, so
@@ -24,7 +21,7 @@
 import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { compareRuleIds, isTag, parseSnapshot, PRIOR_CATEGORIES, RANK, requireNode20, TAG_DEFAULTS, TAGS, validateSnapshot } from './lib/calibrate-lib.mjs';
-import { classificationPaths, isRendered, mergedSummaries, readClassification, RunError, validateSummary } from './lib/proposal-lib.mjs';
+import { classificationPaths, readClassification, RunError } from './lib/proposal-lib.mjs';
 
 requireNode20();
 
@@ -115,22 +112,10 @@ function currentCounts(runDir) {
   return { total_rules: rules.length, current_counts: counts };
 }
 
-function readOverrides(runDir) {
-  const path = join(runDir, 'summaries.json');
-  if (!existsSync(path)) return {};
-  try {
-    const o = JSON.parse(readFileSync(path, 'utf8'));
-    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
-  } catch { return {}; }
-}
-
-// Disjoint counts: decrease + increase + unchanged + needs_decision = rows. summaries_missing
-// counts the rows that will render in the proposal and still have no summary anywhere.
-function summarize(rows, allBatches, overrides = {}) {
+// Disjoint counts: decrease + increase + unchanged + needs_decision = rows.
+function summarize(rows, allBatches) {
   const done = [...new Set(rows.map((r) => r.batch))].sort((a, b) => a - b);
   const count = (pred) => rows.filter(pred).length;
-  const summaries = mergedSummaries(rows, overrides);
-  const missing = rows.filter((r) => isRendered(r) && !summaries[String(r.rule_id)]).map((r) => r.rule_id);
   return {
     batches_total: allBatches.length,
     batches_done: done,
@@ -140,11 +125,10 @@ function summarize(rows, allBatches, overrides = {}) {
     increase: count((r) => r.direction === 'increase'),
     unchanged: count((r) => r.direction === 'none' && !r.needs_decision),
     needs_decision: count((r) => r.needs_decision),
-    summaries_missing: missing.length,
   };
 }
 
-function classify(rule, tag, summary, severities, batch, recordedAt) {
+function classify(rule, tag, severities, batch, recordedAt) {
   const current = String(rule.severity ?? '').toLowerCase();
   const guardHits = Array.isArray(rule.guard_hits) ? rule.guard_hits : [];
   const row = {
@@ -158,7 +142,6 @@ function classify(rule, tag, summary, severities, batch, recordedAt) {
     direction: 'none',
     guard_hits: guardHits,
     needs_decision: false,
-    summary,
     batch,
     recorded_at: recordedAt,
   };
@@ -179,38 +162,22 @@ function classify(rule, tag, summary, severities, batch, recordedAt) {
   return row;
 }
 
-// A value is "tag" or {tag, summary?}. Returns {tag, summary} or a reason string.
-function decision(value) {
-  if (typeof value === 'string') return { tag: value, summary: null };
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    if (typeof value.tag !== 'string') return 'decision object has no "tag" string';
-    const extra = Object.keys(value).filter((k) => k !== 'tag' && k !== 'summary');
-    if (extra.length) return `decision object has unknown key(s) ${extra.join(', ')} (allowed: tag, summary)`;
-    if (value.summary === undefined || value.summary === null || value.summary === '') return { tag: value.tag, summary: null };
-    const reason = validateSummary(value.summary);
-    if (reason) return `summary ${reason.replace(/^summary /, '')}`;
-    return { tag: value.tag, summary: value.summary.trim() };
-  }
-  return 'decision must be a tag string or {"tag": "...", "summary": "..."}';
-}
-
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const runDir = resolve(args.run);
   const { jsonl } = classificationPaths(runDir);
   const allBatches = listBatches(runDir);
   const rows = loadRows(runDir);
-  const overrides = readOverrides(runDir);
 
   if (args.status) {
-    process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'ok', classification: jsonl, ...currentCounts(runDir), ...summarize(rows, allBatches, overrides) })}\n`);
+    process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'ok', classification: jsonl, ...currentCounts(runDir), ...summarize(rows, allBatches) })}\n`);
     return;
   }
 
   if (!allBatches.includes(args.batch)) fail(2, `batch ${args.batch} does not exist in ${join(runDir, 'batches')} (have ${allBatches.length} batches)`);
   const existing = rows.filter((r) => r.batch === args.batch).length;
   if (existing && !args.replace) {
-    process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'already_recorded', batch: args.batch, ...currentCounts(runDir), ...summarize(rows, allBatches, overrides) })}\n`);
+    process.stdout.write(`${JSON.stringify({ run_dir: runDir, status: 'already_recorded', batch: args.batch, ...currentCounts(runDir), ...summarize(rows, allBatches) })}\n`);
     return;
   }
 
@@ -228,17 +195,13 @@ function main() {
   } catch (e) {
     fail(2, `tags are not valid JSON: ${e.message}`);
   }
-  if (!tags || typeof tags !== 'object' || Array.isArray(tags)) fail(2, 'tags must be a JSON object {"<ruleId>": "<tag>" | {"tag": "<tag>", "summary": "<one line>"}}');
+  if (!tags || typeof tags !== 'object' || Array.isArray(tags)) fail(2, 'tags must be a JSON object {"<ruleId>": "<tag>"}');
 
   const issues = [];
-  const decisions = new Map();
   const batchIds = new Set(batchRules.map((r) => String(r.ruleId)));
   for (const id of Object.keys(tags)) {
-    if (!batchIds.has(id)) { issues.push(`ruleId ${id} is not in batch ${args.batch}`); continue; }
-    const d = decision(tags[id]);
-    if (typeof d === 'string') issues.push(`ruleId ${id}: ${d}`);
-    else if (!isTag(d.tag)) issues.push(`ruleId ${id}: unknown tag "${d.tag}" (valid: ${TAGS.join(', ')})`);
-    else decisions.set(id, d);
+    if (!batchIds.has(id)) issues.push(`ruleId ${id} is not in batch ${args.batch}`);
+    else if (!isTag(tags[id])) issues.push(`ruleId ${id}: unknown tag "${JSON.stringify(tags[id]).replace(/^"|"$/g, '')}" (valid: ${TAGS.join(', ')})`);
   }
   for (const r of batchRules) {
     if (!Object.hasOwn(tags, String(r.ruleId))) issues.push(`ruleId ${r.ruleId} ("${r.name}") has no tag`);
@@ -248,15 +211,12 @@ function main() {
   const recordedAt = new Date().toISOString();
   const newRows = [...batchRules]
     .sort((a, b) => compareRuleIds(a.ruleId, b.ruleId))
-    .map((r) => {
-      const d = decisions.get(String(r.ruleId));
-      return classify(r, d.tag, d.summary, effective.severities, args.batch, recordedAt);
-    });
+    .map((r) => classify(r, tags[String(r.ruleId)], effective.severities, args.batch, recordedAt));
   // One write for the whole batch: concurrent recorders never interleave inside a line.
   appendFileSync(jsonl, `${newRows.map((r) => JSON.stringify(r)).join('\n')}\n`);
 
   const merged = loadRows(runDir);
-  const batchSummary = summarize(newRows, [args.batch], overrides);
+  const batchSummary = summarize(newRows, [args.batch]);
   process.stdout.write(`${JSON.stringify({
     run_dir: runDir,
     status: existing ? 'replaced' : 'recorded',
@@ -267,9 +227,8 @@ function main() {
     batch_increase: batchSummary.increase,
     batch_unchanged: batchSummary.unchanged,
     batch_needs_decision: batchSummary.needs_decision,
-    batch_summaries_missing: batchSummary.summaries_missing,
     ...currentCounts(runDir),
-    ...summarize(merged, allBatches, overrides),
+    ...summarize(merged, allBatches),
   })}\n`);
 }
 
