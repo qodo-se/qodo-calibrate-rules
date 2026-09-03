@@ -71,12 +71,22 @@ interrupted run resumes from. Changing a single rule's severity is not this skil
 ## Install
 
 ```sh
-npx skills add qodo-se/qodo-calibrate-rules@v0.8.0 --skill qodo-calibrate-rules
+npx skills add https://github.com/qodo-se/qodo-calibrate-rules \
+  --skill qodo-calibrate-rules \
+  --agent cursor \
+  --global \
+  --yes
 ```
 
-Add `--agent <name>` for each local agent and `--global` to install for the user rather than the
-current project, as with any skills.sh install. The skill lands as
-`skills/qodo-calibrate-rules/SKILL.md` with its `scripts/` and `references/` beside it.
+Pass `--agent <name>` once per local agent you want it installed for, drop `--global` to install
+into the current project instead of the user, and drop `--yes` to confirm interactively. Add
+`--list` in place of `--skill` to see what the repository offers without installing anything. The
+skill lands as `skills/qodo-calibrate-rules/SKILL.md` with its `scripts/` and `references/`
+beside it.
+
+Releases are tagged (`v0.8.0` and onward) and the tags are what the changelog refers to, but
+`skills.sh` installs the repository's default branch and has no flag for pinning a tag or a
+commit. To install an exact release, clone at that tag and point `skills add` at the local path.
 
 ## Prerequisites
 

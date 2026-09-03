@@ -15,8 +15,10 @@ stamped into every generated `apply.sh` / `revert.sh` header.
   `calibrate-revert-<run-id>-<rule-id>`. The `CALIBRATE_*` environment variables, the run-id
   format, the status-token vocabulary, and the exit codes are also untouched. Nothing in a
   previous run's state is orphaned by the rename.
-- Documentation and test fixtures sanitized for public release; install instructions made
-  copy-pasteable. No behavior changed.
+- Documentation and test fixtures sanitized for public release. No behavior changed.
+- The install command takes the repository URL and selects the skill with `--skill`. `skills.sh`
+  reads `<package>@<name>` as a **skill** selector, not a git ref, and offers no way to pin a tag,
+  so these release tags mark the code but cannot be installed directly by tag.
 
 ## 0.7.0
 
