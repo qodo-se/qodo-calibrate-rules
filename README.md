@@ -71,18 +71,22 @@ interrupted run resumes from. Changing a single rule's severity is not this skil
 ## Install
 
 ```sh
-npx skills add https://github.com/qodo-se/qodo-calibrate-rules \
-  --skill qodo-calibrate-rules \
-  --agent cursor \
-  --global \
-  --yes
+npx skills add qodo-se/qodo-calibrate-rules -g -y
 ```
 
-Pass `--agent <name>` once per local agent you want it installed for, drop `--global` to install
-into the current project instead of the user, and drop `--yes` to confirm interactively. Add
-`--list` in place of `--skill` to see what the repository offers without installing anything. The
-skill lands as `skills/qodo-calibrate-rules/SKILL.md` with its `scripts/` and `references/`
-beside it.
+This repository holds exactly one skill, so there is nothing to select: `-g` installs it for the
+user rather than the current project, and `-y` skips the prompts. It lands in
+`.agents/skills/qodo-calibrate-rules/` and is linked into every local agent the installer detects;
+an agent that does not support user-level skills is reported and skipped, which is expected.
+
+Useful variations:
+
+| Command | What it does |
+|---|---|
+| `npx skills add qodo-se/qodo-calibrate-rules` | Interactive: pick the scope and the agents |
+| `… -a cursor -a gemini-cli -g -y` | Install for named agents only |
+| `… --list` | List what the repository offers, install nothing |
+| `… --copy` | Copy the files instead of symlinking them |
 
 Releases are tagged (`v0.8.0` and onward) and the tags are what the changelog refers to, but
 `skills.sh` installs the repository's default branch and has no flag for pinning a tag or a
