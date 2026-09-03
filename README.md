@@ -71,22 +71,27 @@ interrupted run resumes from. Changing a single rule's severity is not this skil
 ## Install
 
 ```sh
-npx skills add qodo-se/qodo-calibrate-rules -g -y
+npx skills add qodo-se/qodo-calibrate-rules
 ```
 
-This repository holds exactly one skill, so there is nothing to select: `-g` installs it for the
-user rather than the current project, and `-y` skips the prompts. It lands in
-`.agents/skills/qodo-calibrate-rules/` and is linked into every local agent the installer detects;
-an agent that does not support user-level skills is reported and skipped, which is expected.
+This repository holds exactly one skill, so there is nothing to pick from; the installer then asks
+you three things: **which agents** to install to (when it detects more than one), the **scope**
+(project or user), and whether to **symlink or copy**. The skill lands in
+`.agents/skills/qodo-calibrate-rules/` and is linked into the agents you chose.
 
-Useful variations:
+Each prompt is skipped only when you answer it on the command line, and `-y` skips all three:
 
 | Command | What it does |
 |---|---|
-| `npx skills add qodo-se/qodo-calibrate-rules` | Interactive: pick the scope and the agents |
-| `… -a cursor -a gemini-cli -g -y` | Install for named agents only |
+| `… -g` | User-level, still asks which agents |
+| `… -a cursor -a gemini-cli` | Named agents only, no agent prompt |
+| `… -g -y` | No prompts: user-level, every detected agent |
 | `… --list` | List what the repository offers, install nothing |
 | `… --copy` | Copy the files instead of symlinking them |
+
+With `-y`, an agent that does not support user-level skills is reported and skipped, which is
+expected rather than a failure. To undo a broad install, run
+`npx skills remove qodo-calibrate-rules -g` and add it again with the agents you want.
 
 Releases are tagged (`v0.8.0` and onward) and the tags are what the changelog refers to, but
 `skills.sh` installs the repository's default branch and has no flag for pinning a tag or a
