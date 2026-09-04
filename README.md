@@ -46,12 +46,53 @@ confirm; the skill applies the approved rows, re-reads the workspace to confirm 
 and reports anything that didn't.
 
 Runs, the receipt, and your rubric live under `${QODO_HOME:-$HOME/.qodo}/calibrate/` — nothing is
-written into a repository or the skill's install directory. `rubric.yaml` is created on the
-first run and never overwritten; edit it to change a taxonomy tag's default severity or extend the
-keyword guard. The taxonomy and defaults are documented in
-[references/rubric.md](skills/qodo-calibrate-rules/references/rubric.md), and the receipt grammar,
-exit codes, and resume rules in
+written into a repository or the skill's install directory. The receipt grammar, exit codes, and
+resume rules are documented in
 [references/receipt-format.md](skills/qodo-calibrate-rules/references/receipt-format.md).
+
+## Customize the rubric
+
+The skill proposes a severity for each rule by tagging it with one of 13 taxonomy tags
+(`documentation`, `security-control`, `data-integrity`, …) and applying that tag's default
+severity. A keyword guard then flags rules that mention sensitive terms such as `auth`,
+`secret`, or `migration`. You can change any tag's default severity and add your own guard terms.
+
+Your copy of the rubric is `${QODO_HOME:-$HOME/.qodo}/calibrate/rubric.yaml`. It is created on the
+first run and never overwritten, so your edits persist across skill updates. The path carries no
+workspace identifier, so one rubric serves every workspace you calibrate under the same
+`QODO_HOME`; point `QODO_HOME` at separate directories if you need different rubrics per
+workspace. Only `version: 1` is required — omitting either customization key leaves it empty — and
+these three are the only keys the parser accepts; any other key stops the run:
+
+```yaml
+version: 1
+severity_overrides:      # tag -> error | warning | recommendation
+  documentation: warning
+  logging: error
+guard_terms_extra:       # appended to the default keyword guard
+  - billing
+  - invoice
+```
+
+- **`severity_overrides`** changes the default severity for a tag. Tags you leave out keep their
+  defaults. Replace the empty `{}` with a mapping rather than adding a second
+  `severity_overrides` key.
+- **`guard_terms_extra`** adds terms to the keyword guard. The guard only vetoes *decreases*: when
+  a rule would be demoted and its text mentions a guard term, the demotion is held back and the
+  rule goes to the needs-decision list for you to approve or reject. A guard hit on a rule that
+  stays the same or is promoted has no effect. Default terms can be extended but not removed —
+  a noisy default costs you a few extra rows to decide, while a missing one could let a bulk run
+  quietly demote a security or data rule.
+
+Edits take effect on the next new run. A run in progress is pinned to the rubric snapshot it took
+when it started, so resuming it keeps the old values. If the file is invalid, the skill stops and
+names the file and the offending line, and lists the valid tags or severities when one of those
+is wrong.
+
+The full taxonomy, each tag's default, and the default guard terms are documented in
+[references/rubric.md](skills/qodo-calibrate-rules/references/rubric.md); the header comment in
+[references/rubric-defaults.yaml](skills/qodo-calibrate-rules/references/rubric-defaults.yaml)
+carries the same list next to the schema.
 
 ## Maintainer and issues
 

@@ -24,7 +24,7 @@
 # Default guard terms: auth, authoriz, authentic, secret, token, credential, password, PII,
 # personal data, payment, migration, delete, deletion, drop, encrypt, decrypt.
 #
-# Example overrides (uncomment to use):
+# Example (replace the empty values at the bottom of this file; do not add a second copy of a key):
 #   severity_overrides:
 #     documentation: warning
 #   guard_terms_extra:
