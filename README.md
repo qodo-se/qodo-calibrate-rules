@@ -74,9 +74,10 @@ guard_terms_extra:       # appended to the default keyword guard
 - **`severity_overrides`** changes the default severity for a tag. Tags you leave out keep their
   defaults. Replace the empty `{}` with a mapping rather than adding a second
   `severity_overrides` key.
-- **`guard_terms_extra`** adds terms to the keyword guard. A guard hit never changes a severity on
-  its own; it blocks an automatic *decrease* and moves that rule into the needs-decision list, so
-  you approve or reject the demotion yourself. Default terms can be extended but not removed —
+- **`guard_terms_extra`** adds terms to the keyword guard. The guard only vetoes *decreases*: when
+  a rule would be demoted and its text mentions a guard term, the demotion is held back and the
+  rule goes to the needs-decision list for you to approve or reject. A guard hit on a rule that
+  stays the same or is promoted has no effect. Default terms can be extended but not removed —
   a noisy default costs you a few extra rows to decide, while a missing one could let a bulk run
   quietly demote a security or data rule.
 
