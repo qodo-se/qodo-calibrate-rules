@@ -55,7 +55,7 @@ resume rules are documented in
 The skill proposes a severity for each rule by tagging it with one of 13 taxonomy tags
 (`documentation`, `security-control`, `data-integrity`, …) and applying that tag's default
 severity. A keyword guard then flags rules that mention sensitive terms such as `auth`,
-`secret`, or `migration`. Both are adjustable.
+`secret`, or `migration`. You can change any tag's default severity and add your own guard terms.
 
 Your copy of the rubric is `${QODO_HOME:-$HOME/.qodo}/calibrate/rubric.yaml`. It is created on the
 first run and never overwritten, so your edits persist across skill updates. The path carries no
