@@ -1,72 +1,34 @@
 # qodo-calibrate-rules
 
-Version 0.8.0 of this coding-agent skill turns a workspace-wide severity review into one
-reviewable, resumable batch. It checks the CLI version, authentication, workspace admin
-permission, and the tool catalog; creates an editable rubric file on first run; exports every
-active Qodo Review Standards rule into a local run folder; classifies each rule against a fixed
-rubric (one taxonomy tag and a proposed severity per rule, with keyword-guard
-and platform-category vetoes on decreases) in parallel classifier subagents so the orchestrating
-agent never loads rule text; renders a diff-only proposal checklist grouped by
-direction and tag; reads the admin's edits back as approve, skip, or override with invalid values
-reported by row; and, after an explicit confirmation, applies the approved rows as a single
-generated script, writing a per-row receipt and remembering every decision so a later run does
-not ask twice. It then re-reads every rule to confirm the workspace really holds what the receipt
-claims, and can put the whole run back where it started from that same receipt. **`severity` is the
-only field it ever writes**, one rule at a time, with an idempotency key per row and a receipt an
-interrupted run resumes from. Changing a single rule's severity is not this skill's job — use
-`qodo-manage-standards` for that.
+A skill that proposes and aids in automating adjustments to Qodo rule severities, based on an
+editable rubric.
 
-## How a run goes
+## Prerequisites
 
-1. **Preflight** — CLI version, login, admin permission, tool catalog.
-2. **Rubric** — `rubric.yaml` on first run, pinned into the run as a snapshot.
-3. **Export** — every active rule into `export.json` plus 40-rule batches.
-4. **Classify** — one taxonomy tag per rule, decided from the rule's full text by classifier
-   subagents (1–2 batches each, in parallel, each in a fresh
-   context); the rubric gives the proposed severity, and a keyword guard or a Security/Compliance
-   category turns a proposed decrease into a row that needs a decision instead. The orchestrating
-   agent reads only the scripts' status lines.
-5. **Propose** — `proposal.md`: a markdown checklist, one row per changing rule with its id,
-   name, `current → proposed`, any guard terms, and the portal link. Rows the rubric
-   proposes start checked; guard or category conflicts start deferred (`[?]`). Unchanged rules never
-   appear, and rules the admin already decided are held out and counted in the footer.
-6. **Approve** — the admin edits the file in any editor (uncheck to skip, `[?]` to defer to the
-   next run, edit the value after the arrow to override), or reviews it in the bundled browser page (`stage-review.mjs` writes a
-   self-contained `review.html` into the run folder; approve / skip / override per row, bulk
-   actions, keyboard flow, guard-term highlighting; *Commit decisions* downloads the edited
-   `proposal.md`), and says when they are done. The skill reads it back — counts,
-   invalid values by row, deleted rows — and asks for confirmation before writing anything. The
-   rules they unchecked go into the ledger at this point; deferred rows are never recorded (and again when the loop is generated,
-   so a missed step cannot lose them).
-7. **Apply** — the confirmed decisions become `apply.sh`, one `qodo rules update` per approved
-   row, run as a single shell invocation. Each row lands in `receipt.md` as `applied`,
-   `failed(<code>)`, `deferred`, or `skipped`. An auth or permission error stops the loop before
-   the next row; a rate limit (`MT-RATE-LIMITED`) or an upstream outage (`MT-UPSTREAM-DOWN`)
-   retries the same row with exponential backoff five times and then marks it `deferred` for a
-   later run. The run exits non-zero unless every approved row applied, and names each row that
-   did not by id and code.
-8. **Resume** — an interrupted apply is re-generated and re-run from the receipt: rows already
-   `applied` are never attempted again, so no rule is written twice.
-9. **Verify** — a read-only re-read of every active rule, paged the same way the export is,
-    comparing each row's live severity to what the receipt expects: the target for a row the loop
-    applied, the current severity for anything else. Each row is marked `verified` or
-    `mismatch(<actual>)` (or `mismatch(missing)` if the rule is gone), and the run exits non-zero
-    with every mismatch listed by id. An `applied` row is never trusted without this read — a row
-    whose update timed out or printed garbage may well have landed anyway, and verify is what says
-    so.
-10. **Revert** — on request only, the same loop backwards: a `revert.sh` generated from the
-    receipt puts every row the receipt shows as changed back at its pre-change severity, under its
-    own idempotency key, with a per-row `reverted` or `failed(revert:<code>)` status. It writes no
-    ledger entry — an approval is remembered only while the rule sits at the approved severity, so
-    a reverted rule is simply proposed again. Once a run is reverted it is closed for apply.
-11. **Remember** — the skipped rules, and the rows that actually applied, go into
-    `decisions.jsonl`. Saying "reconsider rule 815412" releases one so the next proposal includes
-    it again.
+**Qodo CLI**, installed and logged in:
 
-> **Preview.** This skill belongs to the `qodo-standards` family — that is what its
-> `metadata.package` names — but it ships **ahead of** that package and is installed from this
-> repository in the meantime. Once the official Qodo skills distribution carries it, install and
-> update through that instead of here.
+```sh
+qodo --version
+qodo login
+```
+
+If the CLI isn't installed, ask Qodo or your organization's administrator for the current
+checksum-pinned installer — they're served from https://get.qodo.ai. Don't pipe an installer
+straight into a shell.
+
+The skill probes the CLI version before it does anything and offers `qodo update` once if the
+runtime is too old.
+
+**Admin permission in the Qodo portal.** Severity changes are admin-gated on the platform, so your
+workspace permission must be `owner` or `admin`. The skill checks this up front and stops with a
+plain message for anyone else — it stops before generating a proposal, so a member can review a
+proposal an admin shares with them, but cannot produce or apply one.
+
+**Node.js 20 or newer.** The bundled scripts use Node built-ins only; there is nothing to
+`npm install`.
+
+**Windows: Git Bash or WSL.** The skill both applies and undoes its changes by running generated
+POSIX `sh` scripts, which PowerShell can't execute. Everything else works in PowerShell.
 
 ## Install
 
@@ -74,84 +36,27 @@ interrupted run resumes from. Changing a single rule's severity is not this skil
 npx skills add qodo-se/qodo-calibrate-rules
 ```
 
-This repository holds exactly one skill, so there is nothing to pick from; the installer then asks
-you three things: **which agents** to install to (when it detects more than one), the **scope**
-(project or user), and whether to **symlink or copy**. The skill lands in
-`.agents/skills/qodo-calibrate-rules/` and is linked into the agents you chose.
+## Use it
 
-Each prompt is skipped only when you answer it on the command line, and `-y` skips all three:
+Ask your agent to calibrate the workspace — *"recalibrate our review standards"*, *"too many rules
+are errors"*, *"which rules should be errors vs warnings"*. It hands you a checklist of only the
+rules whose severity would change, each with its current and proposed value and a link to the rule
+in the portal. Edit that file in your editor or in the bundled browser page, say you're done, and
+confirm; the skill applies the approved rows, re-reads the workspace to confirm each one landed,
+and reports anything that didn't.
 
-| Command | What it does |
-|---|---|
-| `… -g` | User-level, still asks which agents |
-| `… -a cursor -a gemini-cli` | Named agents only, no agent prompt |
-| `… -g -y` | No prompts: user-level, every detected agent |
-| `… --list` | List what the repository offers, install nothing |
-| `… --copy` | Copy the files instead of symlinking them |
-
-With `-y`, an agent that does not support user-level skills is reported and skipped, which is
-expected rather than a failure. To undo a broad install, run
-`npx skills remove qodo-calibrate-rules -g` and add it again with the agents you want.
-
-Releases are tagged (`v0.8.0` and onward) and the tags are what the changelog refers to, but
-`skills.sh` installs the repository's default branch and has no flag for pinning a tag or a
-commit. To install an exact release, clone at that tag and point `skills add` at the local path.
-
-## Prerequisites
-
-- This skill ships ahead of the `qodo-standards` package: install it from this repository
-  (skills.sh) and load it explicitly. The package itself is not required.
-- Qodo CLI `0.1.0-next.37` or newer, installed and logged in (`qodo login`). The skill probes
-  `qodo --version` first and offers `qodo update` once if the runtime is older.
-- Node.js 20 or newer. The bundled scripts use Node built-ins only — no npm install.
-- Workspace admin permission (`owner` or `admin`). Severity changes are admin-gated on the
-  platform; the skill stops with a plain message for anyone else.
-
-## What it writes, and where
-
-Everything lives under `${QODO_HOME:-$HOME/.qodo}/calibrate/`; nothing is written inside a
-repository or the skill install directory.
-
-- `rubric.yaml` — created from defaults on the first run and never overwritten. Edit it to
-  override a tag's default severity (`severity_overrides`) or add words to the keyword guard
-  (`guard_terms_extra`). The taxonomy, defaults, and guard list are documented in
-  `skills/qodo-calibrate-rules/references/rubric.md`.
-- `decisions.jsonl` — the decisions ledger: one appended line per decision, with the severity it
-  settled on and a hash of the rule's text. Skips are recorded when the admin confirms; approvals
-  and overrides are recorded only for rows that actually applied (a failed, deferred, or pending
-  row is proposed again). A skip or override is honored while the rule's text is unchanged; an
-  approval is honored while the rule still sits at the approved severity, so a severity that
-  drifts later is re-proposed. "reconsider rule <id>" releases one.
-- `runs/<run-id>/` (`run-id` = `YYYYMMDD-HHMMSS` UTC) — one folder per run: `export.json` (every
-  active rule as returned by the CLI), `batches/batch-NNN.json` (40 rules each, with precomputed
-  guard hits) beside `batch-NNN.txt` (the same rules as plain text, what a classifier reads), `rubric-snapshot.yaml` (the effective rubric this
-  run used), `classification.jsonl` (append-only, one line per rule per recording: tag,
-  current and proposed severity, direction, guard hits, and whether the row needs an admin
-  decision; the last line per rule wins, so parallel classifiers never conflict), `proposal.md` (the checklist the admin edits), `receipt.md` (that checklist plus a status
-  token per row and the apply's, verify's and revert's exit codes), `apply.sh` and — after a revert
-  is generated — `revert.sh` (the generated loops that were executed, kept for audit), and
-  `apply-results.jsonl` (every attempt of every phase, appended, each line tagged
-  `phase: apply | verify | revert`). Re-running in the same folder
-  resumes at the first unclassified batch or the first unapplied row; `proposal.md` is never
-  modified by the apply step and never overwritten without an explicit `--replace`.
-
-The receipt grammar, the apply and revert scripts' shape, the failure policy, the exit codes, the
-resume rules, and what verify compares are documented in
-`skills/qodo-calibrate-rules/references/receipt-format.md`.
-
-**Windows.** `apply.sh` and `revert.sh` are POSIX `sh`. Run them under **Git Bash** or **WSL**;
-there is no PowerShell equivalent. The rest of the workflow runs in PowerShell, but pass JSON arguments
-through `--tags-file` rather than inline single quotes.
-
-## Changelog
-
-Every release, including the rename, is in [CHANGELOG.md](CHANGELOG.md).
+Runs, the receipt, and your rubric live under `${QODO_HOME:-$HOME/.qodo}/calibrate/` — nothing is
+written into a repository or the skill's install directory. `rubric.yaml` is created on the
+first run and never overwritten; edit it to change a taxonomy tag's default severity or extend the
+keyword guard. The taxonomy and defaults are documented in
+[references/rubric.md](skills/qodo-calibrate-rules/references/rubric.md), and the receipt grammar,
+exit codes, and resume rules in
+[references/receipt-format.md](skills/qodo-calibrate-rules/references/receipt-format.md).
 
 ## Maintainer and issues
 
 Maintained by the Qodo team. Please report bugs, unexpected severities, and documentation problems
-as issues **on this repository** — that is where this preview is developed. Once the skill moves to
-the official Qodo skills distribution, issue reporting moves with it.
+as issues on this repository.
 
 ## License
 
