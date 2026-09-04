@@ -83,7 +83,8 @@ guard_terms_extra:       # appended to the default keyword guard
 
 Edits take effect on the next new run. A run in progress is pinned to the rubric snapshot it took
 when it started, so resuming it keeps the old values. If the file is invalid, the skill stops and
-names the file, the line, and the valid tags or severities.
+names the file and the offending line, and lists the valid tags or severities when one of those
+is wrong.
 
 The full taxonomy, each tag's default, and the default guard terms are documented in
 [references/rubric.md](skills/qodo-calibrate-rules/references/rubric.md); the header comment in
