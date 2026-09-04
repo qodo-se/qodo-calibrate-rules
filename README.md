@@ -55,11 +55,14 @@ resume rules are documented in
 The skill proposes a severity for each rule by tagging it with one of 13 taxonomy tags
 (`documentation`, `security-control`, `data-integrity`, …) and applying that tag's default
 severity. A keyword guard then flags rules that mention sensitive terms such as `auth`,
-`secret`, or `migration`. Both are adjustable per workspace.
+`secret`, or `migration`. Both are adjustable.
 
 Your copy of the rubric is `${QODO_HOME:-$HOME/.qodo}/calibrate/rubric.yaml`. It is created on the
-first run and never overwritten, so your edits persist across skill updates. The file has exactly
-three keys — adding any other key stops the run:
+first run and never overwritten, so your edits persist across skill updates. The path carries no
+workspace identifier, so one rubric serves every workspace you calibrate under the same
+`QODO_HOME`; point `QODO_HOME` at separate directories if you need different rubrics per
+workspace. Only `version: 1` is required — omitting either customization key leaves it empty — and
+these three are the only keys the parser accepts; any other key stops the run:
 
 ```yaml
 version: 1
