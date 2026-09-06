@@ -55,12 +55,9 @@ test('SKILL_VERSION matches SKILL.md metadata and the Quick start provenance fla
   const provenance = skill.match(/--skill-version\s+(\S+)/);
   assert.ok(provenance, 'SKILL.md Quick start --skill-version');
   assert.equal(provenance[1], SKILL_VERSION);
-  // Captured and compared, not `includes`: an `includes` still passes when the bump added the new
-  // number somewhere and left a stale `Version 0.x.y` line behind.
+  // The README no longer carries a `Version x.y.z` line (dropped in e10bf37), so the only README
+  // contract left is "no stale semver": every version-looking number in either doc is this one.
   const readme = readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8');
-  const versions = [...readme.matchAll(/^Version (\S+)/gm)].map((m) => m[1]);
-  assert.deepEqual(versions, [SKILL_VERSION], 'README names exactly this version');
-  // And no stale semver anywhere else in either doc.
   for (const [name, text] of [['README.md', readme], ['SKILL.md', skill]]) {
     for (const found of [...text.matchAll(/\b\d+\.\d+\.\d+\b/g)].map((m) => m[0])) {
       if (found === '0.1.0') continue; // the documented CLI minimum, not this skill's version
