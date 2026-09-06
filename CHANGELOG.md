@@ -3,6 +3,27 @@
 All notable changes to this skill. Versions are the skill's own `metadata.version`, which is also
 stamped into every generated `apply.sh` / `revert.sh` header.
 
+## Unreleased
+
+- **Workspace binding.** `apply.mjs --generate` (apply and revert) now requires `--workspace-id`
+  and refuses when it differs from the checklist's `workspace_id`, so a proposal approved in one
+  workspace cannot be applied to another after an account or workspace switch.
+- **Pre-write drift check.** `--generate` re-reads the active set once (same paged read as export)
+  and leaves out any row whose live severity no longer matches what the admin approved against
+  (`current` for apply, the believed state for revert). Such rows are reported as `drifted`, stay
+  pending, and are proposed again next run. A revert therefore never overwrites a severity someone
+  set after the apply.
+- **URL allowlist.** A rule's exported `url` is kept only when it is an absolute `https://` URL;
+  anything else falls back to the canonical `https://app.qodo.ai/rules/<id>`. The browser review
+  page applies the same allowlist independently before rendering an `href`.
+- **Classifier prompt hardening.** The classifier prompt and SKILL.md state that rule text is
+  workspace-authored data, never instructions, and recommend spawning classifiers with tool access
+  limited to reads plus `record-batch.mjs` where the host supports it.
+- `loadRun` refuses an `export.json` without a `rules` array instead of reading it as empty.
+- The `.cmd`/`.bat` launcher quoter now quotes every cmd.exe metacharacter (`& | < > ^ ( ) % !`)
+  and doubles embedded quotes.
+- Test: the README no longer carries a `Version x.y.z` line, so `lib.test.mjs` no longer asserts one.
+
 ## 0.8.0
 
 - **Renamed** from `qodo-standards-calibrate` to `qodo-calibrate-rules`. The skill directory, the
